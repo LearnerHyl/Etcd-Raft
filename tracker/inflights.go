@@ -66,6 +66,8 @@ func (in *Inflights) Clone() *Inflights {
 // size is being dispatched. Full() must be called prior to Add() to verify that
 // there is room for one more message, and consecutive calls to Add() must
 // provide a monotonic sequence of indexes.
+// Add通知Inflights正在发送一个新的消息，该消息的索引和字节大小分别为index和bytes。
+// 在调用Add()之前必须调用Full()来验证是否有足够的空间来存储一个新的消息，并且连续调用Add()必须提供一个单调递增的索引序列。
 func (in *Inflights) Add(index, bytes uint64) {
 	if in.Full() {
 		panic("cannot add into a Full inflights")

@@ -467,11 +467,14 @@ func (l *raftLog) allEntries() []pb.Entry {
 
 // isUpToDate determines if a log with the given last entry is more up-to-date
 // by comparing the index and term of the last entries in the existing logs.
+// isUpToDate通过比较现有日志中最后条目的索引和term，确定具有给定最后条目的日志是否更新。
 //
 // If the logs have last entries with different terms, then the log with the
 // later term is more up-to-date. If the logs end with the same term, then
 // whichever log has the larger lastIndex is more up-to-date. If the logs are
 // the same, the given log is up-to-date.
+// 如果日志具有不同term的最后条目，则具有较大Term号的日志更为更新。如果日志以相同的term结束，
+// 则具有较大lastIndex的日志更为更新。如果日志相同，则给定的日志是最新的。
 func (l *raftLog) isUpToDate(their entryID) bool {
 	our := l.lastEntryID()
 	return their.term > our.term || their.term == our.term && their.index >= our.index

@@ -20,9 +20,9 @@ type StateType uint64
 /**
  * 这里总结一下Leader对于处于不同状态的follower的不同行为：
  * 1. StateProbe：Leader定期发送Append请求探测follower的lastIndex，以找到合适的prevIndex ，
- *    其实本质上与StateReplicate是一样的，只是在该状态下的follower可能会多次拒绝Append请求，当
- *    follower的lastIndex被探测到，正确的PrevLogIndex和PrevLogTerm被找到后，follower就可以进入
- *    StateReplicate状态。
+ *    其实本质上与StateReplicate是一样的，当follower的lastIndex被探测到，正确的PrevLogIndex和PrevLogTerm被找到后，
+ *    follower就可以进入StateReplicate状态。Leader不会给处于StateProbe状态的follower发送日志流，只会逐步探测其lastIndex。
+ *    详情可见pr.MsgAppFlowPaused参数的解释。
  * 2. StateReplicate：Leader会发送Append请求，follower会积极的接收要追加到其日志中的日志条目。
  * 3. StateSnapshot：Leader会发送InstallSnapshot请求，follower需要一个完整的快照来返回到StateReplicate状态。
  *    在follower应用完快照并回复Leader之前，Leader不会给其发送Append请求。

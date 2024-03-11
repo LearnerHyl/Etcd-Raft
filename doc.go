@@ -420,10 +420,16 @@ raft库使用Protocol Buffer格式发送和接收消息（在raftpb包中定义�
 	'MsgStorageAppendResp' back to itself. The responses can also contain
 	'MsgAppResp', 'MsgVoteResp', and 'MsgPreVoteResp' messages. Used with
 	AsynchronousStorageWrites.
+	`MsgStorageAppend`是节点发送给它自己本地的append storage线程的消息，用于将条目、硬状态和/或快照写入稳定存储。
+	该消息将携带一个或多个响应，其中一个将是返回给自己的`MsgStorageAppendResp`。
+	响应还可以包含`MsgAppResp`、`MsgVoteResp`和`MsgPreVoteResp`消息。用于AsynchronousStorageWrites。
+
 
 	'MsgStorageApply' is a message from a node to its local apply storage
 	thread to apply committed entries. The message will carry one response,
 	which will be a 'MsgStorageApplyResp' back to itself. Used with
 	AsynchronousStorageWrites.
+	`MsgStorageApply`是节点发送给它自己本地的apply storage线程的消息，用于应用已提交的条目。
+	该消息将携带一个响应，这将是返回给自己的`MsgStorageApplyResp`。用于AsynchronousStorageWrites。
 */
 package raft

@@ -410,8 +410,10 @@ type raft struct {
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
 
+	// 可选项：Leader应定期检查集群中的大多数节点是否活跃。如果Leader在选举超时期间没有收到大多数节点的消息，则它将放弃领导权。
 	checkQuorum bool
-	preVote     bool
+	// 可选项：Leader在选举超时期间是否应该进行预投票。预投票是一种防止节点在重新加入集群时发生中断的机制。
+	preVote bool
 
 	heartbeatTimeout int
 	electionTimeout  int
@@ -630,10 +632,12 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	// leader to send an append), allowing it to be acked or rejected, both of
 	// which will clear out Inflights.
 	// 在受限的StateReplicate状态下，只发送空的MsgApp，以确保进度。
-	// 否则，如果我们有一个完整的Inflights并且所有的inflight消息实际上都被丢弃了，那么复制到该follower将会停滞。
+	// 否则，如果我们有一个满的Inflights并且所有的inflight消息实际上都被丢弃了，那么复制到该follower将会停滞。
+	// 相反，一个空的MsgApp最终会到达follower（心跳响应促使leader发送一个append），允许它被确认或拒绝，这两者都会清除Inflights。
 	if pr.State != tracker.StateReplicate || !pr.Inflights.Full() {
 		ents, err = r.raftLog.entries(pr.Next, r.maxMsgSize)
 	}
+	// 若没有实际的entries，且不发送同步commitIndex的空消息，则不发送消息
 	if len(ents) == 0 && !sendIfEmpty {
 		return false
 	}
@@ -651,6 +655,7 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		Entries: ents,
 		Commit:  r.raftLog.committed,
 	})
+	// 更新目标follower对应progress对象的状态
 	pr.UpdateOnEntriesSend(len(ents), uint64(payloadsSize(ents)))
 	return true
 }
@@ -1011,6 +1016,7 @@ func (r *raft) hasUnappliedConfChanges() bool {
 
 // campaign transitions the raft instance to candidate state. This must only be
 // called after verifying that this is a legitimate transition.
+// campaign将raft实例转换为候选人状态。只有在验证这是合法转换之后才能调用此函数。
 func (r *raft) campaign(t CampaignType) {
 	if !r.promotable() {
 		// This path should not be hit (callers are supposed to check), but
@@ -1073,16 +1079,26 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int, rejected 
 
 func (r *raft) Step(m pb.Message) error {
 	// Handle the message term, which may result in our stepping down to a follower.
+	// 处理消息的term，这可能导致我们降级为follower。
 	switch {
 	case m.Term == 0:
 		// local message
-	case m.Term > r.Term:
-		if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote {
+		// 本地消息，由该raftNode自己发出的消息
+	case m.Term > r.Term: // 若消息的term大于当前raftNode的term
+		if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote { // 且当前节点收到了来自其他节点的请求投票的消息
+			// 当msg的context为compaignTransfer时，表示Leader强制要求某个Follower开始竞选，因为当前集群的Leader要转移领导权
+			// 当前peer收到的正是来自Leader的强制转移领导权的目标follower的请求投票的消息
 			force := bytes.Equal(m.Context, []byte(campaignTransfer))
+			// 是否在租约期内
+			// 租约：在选举超时时间内收到了来自当前Leader的消息,即他知道当前Leader还活着
 			inLease := r.checkQuorum && r.lead != None && r.electionElapsed < r.electionTimeout
+			// 若是非强制，且该follower在租约期内，那么不需要做任何处理
 			if !force && inLease {
 				// If a server receives a RequestVote request within the minimum election timeout
 				// of hearing from a current leader, it does not update its term or grant its vote
+				// 如果服务器在最小选举超时时间内收到了Leader的消息，并且在此期间还收到了RequestVote请求，
+				// 那么它不会更新自己的term，也不会投票
+				// 非强制、且在租约期内的peer可以忽略该请求投票的消息
 				last := r.raftLog.lastEntryID()
 				// TODO(pav-kv): it should be ok to simply print the %+v of the lastEntryID.
 				r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] ignored %s from %x [logterm: %d, index: %d] at term %d: lease is not expired (remaining ticks: %d)",
@@ -1093,13 +1109,17 @@ func (r *raft) Step(m pb.Message) error {
 		switch {
 		case m.Type == pb.MsgPreVote:
 			// Never change our term in response to a PreVote
+			// 在回复一个PreVote类型的投票请求时，不会改变自己的term
 		case m.Type == pb.MsgPreVoteResp && !m.Reject:
 			// We send pre-vote requests with a term in our future. If the
 			// pre-vote is granted, we will increment our term when we get a
 			// quorum. If it is not, the term comes from the node that
 			// rejected our vote so we should become a follower at the new
 			// term.
+			// 我们发送带有future term的PreVote请求。如果PreVote被授予，我们将在获得大多数PreVote肯定回复时增加我们的term。
+			// 如果没有，term来自拒绝我们投票请求的节点，因此我们应该在新term下成为follower。
 		default:
+			// 默认情况下，收到的是来自Leader的MsgApp、MsgHeartbeat、MsgSnap这些消息，可以正常更新自己的term
 			r.logger.Infof("%x [term: %d] received a %s message with higher term from %x [term: %d]",
 				r.id, r.Term, m.Type, m.From, m.Term)
 			if m.Type == pb.MsgApp || m.Type == pb.MsgHeartbeat || m.Type == pb.MsgSnap {
@@ -1109,7 +1129,8 @@ func (r *raft) Step(m pb.Message) error {
 			}
 		}
 
-	case m.Term < r.Term:
+	case m.Term < r.Term: // 若消息的term小于当前raftNode的term，这里处理完就会返回
+		// 若启动了checkQuorum或者preVote机制，且当前收到的消息类型是MsgApp或MsgHeartbeat
 		if (r.checkQuorum || r.preVote) && (m.Type == pb.MsgHeartbeat || m.Type == pb.MsgApp) {
 			// We have received messages from a leader at a lower term. It is possible
 			// that these messages were simply delayed in the network, but this could
@@ -1125,6 +1146,14 @@ func (r *raft) Step(m pb.Message) error {
 			// but it will not receive MsgApp or MsgHeartbeat, so it will not create
 			// disruptive term increases, by notifying leader of this node's activeness.
 			// The above comments also true for Pre-Vote
+			// 我们从leader处收到了一个低于当前节点term的消息。这可能是因为这些消息在网络中被延迟了，但这也可能意味着
+			// 在网络分区期间，这个节点已经提升了它的term编号，现在它既无法赢得选举，也无法在旧term上重新加入大多数节点。
+			// 如果checkQuorum为false，则将通过增加自身的Term编号来响应具有更高Term的MsgVote消息；但如果 checkQuorum 为true，
+			// 我们可能不会因为MsgVote信息而推进自身Term，并且必须生成其他消息来推进自身Term。
+			// 这两个特性(即checkQuorum和preVote)的综合结果是最小化被从集群配置中移除的节点所造成的干扰：
+			// 删除的节点将发送将被忽略的 MsgVotes（或 MsgPreVotes），但不会接收 MsgApp 或 MsgHeartbeat消息，
+			// 因此它通过通知领导者该节点的活跃性，从而不会造成干扰性的任期增加。
+			// 上述评论对于Pre-Vote也是正确的。
 			//
 			// When follower gets isolated, it soon starts an election ending
 			// up with a higher term than leader, although it won't receive enough
@@ -1132,22 +1161,31 @@ func (r *raft) Step(m pb.Message) error {
 			// with "pb.MsgAppResp" of higher term would force leader to step down.
 			// However, this disruption is inevitable to free this stuck node with
 			// fresh election. This can be prevented with Pre-Vote phase.
+			// 当follower被隔离时，它很快就会开始一场选举，最终以比leader更高的term结束，尽管它不会收到足够的选票来赢得选举。
+			// 当它恢复连接时，这个带有更高term的“pb.MsgAppResp”响应将迫使leader下台。然而，为了通过新的选举来释放这个卡住的节点，
+			// 这种干扰是不可避免的。这可以通过Pre-Vote阶段来防止。
 			r.send(pb.Message{To: m.From, Type: pb.MsgAppResp})
 		} else if m.Type == pb.MsgPreVote {
+			// 当前集群存在分区，有大多数的分区可能已经开始了新的Term，而少数分区可能刚刚超时，发起
+			// 选举之前，先开始PreVote阶段，而此时分区恢复，因此节点可能收到来自之前Term的PreVote消息
 			// Before Pre-Vote enable, there may have candidate with higher term,
 			// but less log. After update to Pre-Vote, the cluster may deadlock if
 			// we drop messages with a lower term.
+			// 在启用Pre-Vote之前，可能有term更高但日志更少的候选者。在更新为Pre-Vote之后，
+			// 如果我们丢弃具有较低term的消息，集群可能会陷入死锁。
 			last := r.raftLog.lastEntryID()
 			// TODO(pav-kv): it should be ok to simply print %+v of the lastEntryID.
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] rejected %s from %x [logterm: %d, index: %d] at term %d",
 				r.id, last.term, last.index, r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
 			r.send(pb.Message{To: m.From, Term: r.Term, Type: pb.MsgPreVoteResp, Reject: true})
-		} else if m.Type == pb.MsgStorageAppendResp {
+		} else if m.Type == pb.MsgStorageAppendResp { // 本地append storage线程处理完Append消息后，会向当前节点发送的消息
 			if m.Index != 0 {
 				// Don't consider the appended log entries to be stable because
 				// they may have been overwritten in the unstable log during a
 				// later term. See the comment in newStorageAppendResp for more
 				// about this race.
+				// 不要认为追加的日志条目是稳定的，因为它们可能在后续term的不稳定日志中被覆盖。
+				// 有关此竞争的更多信息，请参见newStorageAppendResp中的注释。
 				r.logger.Infof("%x [term: %d] ignored entry appends from a %s message with lower term [term: %d]",
 					r.id, r.Term, m.Type, m.Term)
 			}
@@ -1155,6 +1193,7 @@ func (r *raft) Step(m pb.Message) error {
 				// Even if the snapshot applied under a different term, its
 				// application is still valid. Snapshots carry committed
 				// (term-independent) state.
+				// 即使快照在不同的term下应用，它的应用仍然有效。快照携带已提交的（与term无关的）状态。
 				r.appliedSnap(m.Snapshot)
 			}
 		} else {
@@ -1164,9 +1203,12 @@ func (r *raft) Step(m pb.Message) error {
 		}
 		return nil
 	}
-
+	// 到此，说明该msg的Term等于当前raftNode的Term；
+	// 或者msg.Term > r.Term,并且是LeaderTransfer类型选举，或者当前节点不在Lease内。
 	switch m.Type {
 	case pb.MsgHup:
+		// 当收到MsgHup消息时，说明当前节点要发起选举了
+		// 根据是否启动了PreVote机制，来决定是直接发起选举，还是先发起PreVote
 		if r.preVote {
 			r.hup(campaignPreElection)
 		} else {
@@ -1174,6 +1216,7 @@ func (r *raft) Step(m pb.Message) error {
 		}
 
 	case pb.MsgStorageAppendResp:
+		// 当收到MsgStorageAppendResp消息时，说明本地append storage线程处理完Append消息后，会向当前节点发送的消息
 		if m.Index != 0 {
 			r.raftLog.stableTo(entryID{term: m.LogTerm, index: m.Index})
 		}
@@ -1182,6 +1225,7 @@ func (r *raft) Step(m pb.Message) error {
 		}
 
 	case pb.MsgStorageApplyResp:
+		// 当收到MsgStorageApplyResp消息时，说明本地apply storage线程处理完Apply消息后，会向当前节点发送的消息
 		if len(m.Entries) > 0 {
 			index := m.Entries[len(m.Entries)-1].Index
 			r.appliedTo(index, entsSize(m.Entries))
@@ -1190,10 +1234,13 @@ func (r *raft) Step(m pb.Message) error {
 
 	case pb.MsgVote, pb.MsgPreVote:
 		// We can vote if this is a repeat of a vote we've already cast...
+		// 如果这是我们已经投过的票的重复请求，可能对方由于网络原因没有收到我们的投票回复
 		canVote := r.Vote == m.From ||
 			// ...we haven't voted and we don't think there's a leader yet in this term...
+			// ...我们还没有投票，而且我们认为在这个term中还没有领导者...
 			(r.Vote == None && r.lead == None) ||
 			// ...or this is a PreVote for a future term...
+			// ...或者这是一个未来term的PreVote...
 			(m.Type == pb.MsgPreVote && m.Term > r.Term)
 		// ...and we believe the candidate is up to date.
 		lastID := r.raftLog.lastEntryID()
@@ -1203,6 +1250,7 @@ func (r *raft) Step(m pb.Message) error {
 			// This seems counter- intuitive but is necessary in the situation in which
 			// a learner has been promoted (i.e. is now a voter) but has not learned
 			// about this yet.
+			// 注意：事实证明，learners必须被允许投票。这似乎是违反直觉的，但在以下情况下是必要的：
 			// For example, consider a group in which id=1 is a learner and id=2 and
 			// id=3 are voters. A configuration change promoting 1 can be committed on
 			// the quorum `{2,3}` without the config change being appended to the
@@ -1217,6 +1265,11 @@ func (r *raft) Step(m pb.Message) error {
 			// it won't win the election, at least in the absence of the bug discussed
 			// in:
 			// https://github.com/etcd-io/etcd/issues/7625#issuecomment-488798263.
+			// 例如，考虑一个组，其中id=1是一个learner，id=2和id=3是voter。在quorum`{2,3}`上提交了一个提升1的配置更改，
+			// 而该配置更改尚未附加到learner的日志中。如果leader（例如2）失败，实际上只剩下两个voter。只有3可以赢得选举
+			// （因为它的日志包含所有已提交的条目），但为了这样做，它需要1投票。但1认为自己是一个learner，并且会继续这样做，
+			// 直到3成为leader，将配置更改复制到1，并且1应用它。最终，通过接收投票请求，learner意识到候选者认为它是一个voter，
+			// 并且它应该相应地行事。候选者的配置也可能过时；但在这种情况下，它不会赢得选举，至少在没有讨论的bug的情况下：；链接如上。
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
 				r.id, lastID.term, lastID.index, r.Vote, m.Type, m.From, candLastID.term, candLastID.index, r.Term)
 			// When responding to Msg{Pre,}Vote messages we include the term
@@ -1228,19 +1281,28 @@ func (r *raft) Step(m pb.Message) error {
 			// the message (it ignores all out of date messages).
 			// The term in the original message and current local term are the
 			// same in the case of regular votes, but different for pre-votes.
-			r.send(pb.Message{To: m.From, Term: m.Term, Type: voteRespMsgType(m.Type)})
+			// 当响应Msg{Pre,}Vote消息时，我们包含消息中的term，而不是本地term。
+			// 要了解原因，请考虑先前被分区的单个节点，它的本地term现在已经过时。如果我们包含本地term（回想一下，对于Pre-Votes，我们不会更新本地term），
+			// 那么另一端的（pre-）campaigning节点将继续忽略该消息（它会忽略所有过时的消息）。
+			// 这一点看一下上面处理m.Term < r.Term的代码就能理解了
+			//
+			// 在常规投票的情况下，原始消息中的term和当前本地term是相同的，但对于Pre-Votes，它们是不同的。
+			r.send(pb.Message{To: m.From, Term: m.Term, Type: voteRespMsgType(m.Type)}) // 注意这里的Term是消息中的Term
 			if m.Type == pb.MsgVote {
 				// Only record real votes.
+				// 只记录真正的投票，PreVote只是为了预选，不会真正投票
 				r.electionElapsed = 0
 				r.Vote = m.From
 			}
 		} else {
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] rejected %s from %x [logterm: %d, index: %d] at term %d",
 				r.id, lastID.term, lastID.index, r.Vote, m.Type, m.From, candLastID.term, candLastID.index, r.Term)
-			r.send(pb.Message{To: m.From, Term: r.Term, Type: voteRespMsgType(m.Type), Reject: true})
+			r.send(pb.Message{To: m.From, Term: r.Term, Type: voteRespMsgType(m.Type), Reject: true}) // 这里可以使用本地的Term
 		}
 
 	default:
+		// 当传入的msg.Type不是pb.MsgVote, pb.MsgPreVote, pb.MsgStorageAppendResp, pb.MsgStorageApplyResp时，调用r.step(r, m)
+		// 下面这些类型
 		err := r.step(r, m)
 		if err != nil {
 			return err
@@ -1253,6 +1315,7 @@ type stepFunc func(r *raft, m pb.Message) error
 
 func stepLeader(r *raft, m pb.Message) error {
 	// These message types do not require any progress for m.From.
+	// 这些消息类型不需要m.From的任何进度。
 	switch m.Type {
 	case pb.MsgBeat:
 		r.bcastHeartbeat()

@@ -189,22 +189,29 @@ func (pr *Progress) BecomeSnapshot(snapshoti uint64) {
 // UpdateOnEntriesSend updates the progress on the given number of consecutive
 // entries being sent in a MsgApp, with the given total bytes size, appended at
 // log indices >= pr.Next.
+// UpdateOnEntriesSend在MsgApp中有条目被发送时更新progress，会更新本次MsgApp信息中的entry数量和总字节数。
+// 这些entry的索引是>=pr.Next的。
 //
 // Must be used with StateProbe or StateReplicate.
+// UpdateOnEntriesSend只能用于StateProbe或StateReplicate状态的follower。
 func (pr *Progress) UpdateOnEntriesSend(entries int, bytes uint64) {
 	switch pr.State {
 	case StateReplicate:
 		if entries > 0 {
 			pr.Next += uint64(entries)
+			// 意味着这个已经发送的MsgApp消息的最新的entry的索引是pr.Next-1
 			pr.Inflights.Add(pr.Next-1, bytes)
 		}
 		// If this message overflows the in-flights tracker, or it was already full,
 		// consider this message being a probe, so that the flow is paused.
+		// 如果这个消息超出了in-flights tracker的限制，或者它已经满了，那么认为这个消息是一个探测消息，所以流量被暂停。
 		pr.MsgAppFlowPaused = pr.Inflights.Full()
 	case StateProbe:
 		// TODO(pavelkalinnikov): this condition captures the previous behaviour,
 		// but we should set MsgAppFlowPaused unconditionally for simplicity, because any
 		// MsgApp in StateProbe is a probe, not only non-empty ones.
+		// 这个条件捕获了以前的行为，但是为了简单起见，我们应该无条件地设置MsgAppFlowPaused，
+		// 因为StateProbe中的任何MsgApp都是探测消息，不仅仅是非空的消息。
 		if entries > 0 {
 			pr.MsgAppFlowPaused = true
 		}

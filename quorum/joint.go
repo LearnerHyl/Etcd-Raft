@@ -16,6 +16,8 @@ package quorum
 
 // JointConfig is a configuration of two groups of (possibly overlapping)
 // majority configurations. Decisions require the support of both majorities.
+// JointConfig是两个Group（可能重叠）多数配置的配置。决策需要两个多数的支持。
+// 为了支持集群成员变更，Raft引入了JointConsensus机制，具体细节看论文。
 type JointConfig [2]MajorityConfig
 
 func (c JointConfig) String() string {
@@ -46,6 +48,9 @@ func (c JointConfig) Describe(l AckedIndexer) string {
 // CommittedIndex returns the largest committed index for the given joint
 // quorum. An index is jointly committed if it is committed in both constituent
 // majorities.
+// CommittedIndex 返回给定的联合配置中最大的commitIndex值。
+// 如果一个index在两个多数中都被提交了，那么这个index就是联合提交的。
+// 很显然,Etcd-Raft采用的是论文中的JointConsensus机制来实现集群成员变更。
 func (c JointConfig) CommittedIndex(l AckedIndexer) Index {
 	idx0 := c[0].CommittedIndex(l)
 	idx1 := c[1].CommittedIndex(l)

@@ -22,14 +22,17 @@ import (
 
 type raftLog struct {
 	// storage contains all stable entries since the last snapshot.
+	// storage包括自上次快照以来的所有稳定条目。
 	storage Storage
 
 	// unstable contains all unstable entries and snapshot.
 	// they will be saved into storage.
+	// unstable包含所有不稳定的条目和快照。它们将被保存到存储中。
 	unstable unstable
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
+	// committed是已知在大多数节点上的稳定存储中的最高日志位置。
 	committed uint64
 	// applying is the highest log position that the application has
 	// been instructed to apply to its state machine. Some of these
@@ -37,6 +40,9 @@ type raftLog struct {
 	// reached applied.
 	// Use: The field is incremented when accepting a Ready struct.
 	// Invariant: applied <= applying && applying <= committed
+	// applying是应用程序被指示应用于其状态机的最高日志位置。其中一些条目可能正在应用过程中，尚未达到应用。
+	// Use:在应用程序接受Ready结构时，该字段递增。
+	// 不变性：applied <= applying && applying <= committed
 	applying uint64
 	// applied is the highest log position that the application has
 	// successfully applied to its state machine.
@@ -44,6 +50,9 @@ type raftLog struct {
 	// entries in a Ready struct have been applied (either synchronously
 	// or asynchronously).
 	// Invariant: applied <= committed
+	// applied是应用程序成功应用于其状态机的最高日志位置。
+	// Use:在Ready结构中的committed entries已应用（同步或异步）后，该字段递增。
+	// 不变性：applied <= committed
 	applied uint64
 
 	logger Logger
@@ -51,13 +60,16 @@ type raftLog struct {
 	// maxApplyingEntsSize limits the outstanding byte size of the messages
 	// returned from calls to nextCommittedEnts that have not been acknowledged
 	// by a call to appliedTo.
+	// maxApplyingEntsSize限制了从nextCommittedEnts调用返回的消息的未完成字节大小，这些消息还没有被调用appliedTo确认。
 	maxApplyingEntsSize entryEncodingSize
 	// applyingEntsSize is the current outstanding byte size of the messages
 	// returned from calls to nextCommittedEnts that have not been acknowledged
 	// by a call to appliedTo.
+	// applyingEntsSize是当前从nextCommittedEnts调用返回的消息的未完成字节大小，这些消息还没有被调用appliedTo确认。
 	applyingEntsSize entryEncodingSize
 	// applyingEntsPaused is true when entry application has been paused until
 	// enough progress is acknowledged.
+	// 直到足够的进度被确认，entry application被暂停时，applyingEntsPaused为true。
 	applyingEntsPaused bool
 }
 
@@ -81,6 +93,7 @@ func newLogWithSize(storage Storage, logger Logger, maxApplyingEntsSize entryEnc
 	}
 	return &raftLog{
 		storage: storage,
+		// unstale的entries中第一条数据的索引应该是storage中的最后一条数据的索引+1
 		unstable: unstable{
 			offset:           lastIndex + 1,
 			offsetInProgress: lastIndex + 1,
@@ -89,6 +102,8 @@ func newLogWithSize(storage Storage, logger Logger, maxApplyingEntsSize entryEnc
 		maxApplyingEntsSize: maxApplyingEntsSize,
 
 		// Initialize our committed and applied pointers to the time of the last compaction.
+		// 初始化committed、appling、applied三个指针为快照后面的第一条数据的索引，该数据是一条dummy数据
+		// 用来存储快照的index和term
 		committed: firstIndex - 1,
 		applying:  firstIndex - 1,
 		applied:   firstIndex - 1,
@@ -104,7 +119,9 @@ func (l *raftLog) String() string {
 
 // maybeAppend returns (0, false) if the entries cannot be appended. Otherwise,
 // it returns (last index of new entries, true).
+// 如果entries不能被追加，则返回(0, false)。否则，返回(新entries的最后索引, true)。
 func (l *raftLog) maybeAppend(a logSlice, committed uint64) (lastnewi uint64, ok bool) {
+	// 判断prevLogindex处的entry是否与a.prev相同
 	if !l.matchTerm(a.prev) {
 		return 0, false
 	}
@@ -112,6 +129,7 @@ func (l *raftLog) maybeAppend(a logSlice, committed uint64) (lastnewi uint64, ok
 	// way down in unstable, for safety checks, and for useful bookkeeping.
 
 	lastnewi = a.prev.index + uint64(len(a.entries))
+	// 不是无脑的追加所有日志，找到follower中与a.entries冲突的第一条日志
 	ci := l.findConflict(a.entries)
 	switch {
 	case ci == 0:
@@ -122,6 +140,8 @@ func (l *raftLog) maybeAppend(a logSlice, committed uint64) (lastnewi uint64, ok
 		if ci-offset > uint64(len(a.entries)) {
 			l.logger.Panicf("index, %d, is out of range [%d]", ci-offset, len(a.entries))
 		}
+		// 将与a.entries冲突的日志截断，然后将a.entries追加到l.unstable.entries中
+		// 上述操作交给l.append()方法完成
 		l.append(a.entries[ci-offset:]...)
 	}
 	l.commitTo(min(committed, lastnewi))
@@ -149,6 +169,12 @@ func (l *raftLog) append(ents ...pb.Entry) uint64 {
 // An entry is considered to be conflicting if it has the same index but
 // a different term.
 // The index of the given entries MUST be continuously increasing.
+// findConflict查找冲突的索引。
+// 如果存在entries和给定的entries之间存在冲突，它返回冲突的第一对entries。
+// 如果没有冲突的entries，并且存在的entries包含所有给定的entries，则返回0。
+// 如果没有冲突的entries，但给定的entries包含新的entries，则返回第一个新entry的索引。
+// 如果两个entries的索引相同但term不同，则认为是冲突的。
+// 给定的entries的索引必须是连续递增的。
 func (l *raftLog) findConflict(ents []pb.Entry) uint64 {
 	for i := range ents {
 		if id := pbEntryID(&ents[i]); !l.matchTerm(id) {
@@ -177,11 +203,20 @@ func (l *raftLog) findConflict(ents []pb.Entry) uint64 {
 // This function is used by a follower and leader to resolve log conflicts after
 // an unsuccessful append to a follower, and ultimately restore the steady flow
 // of appends.
+// findConflictByTerm返回一个最佳猜测，即当前节点日志在哪里开始与Leader的日志不匹配，
+// 假设我们只知道另一个日志的（index, term）。
+// 具体来说，第一个返回值是最大的guessIndex <= index，使得term(guessIndex) <= term，
+// 或者term(guessIndex)是未知的（因为这个索引是压缩的或尚未存储）。
+// 第二个返回值是term(guessIndex)，如果未知则为0。
+// 这个函数用于follower和leader在向follower追加失败后解决日志冲突，并最终恢复追加的稳定流。
+// 总结来说，返回的是当前节点日志中小于等于给定term的最大的index
 func (l *raftLog) findConflictByTerm(index uint64, term uint64) (uint64, uint64) {
 	for ; index > 0; index-- {
 		// If there is an error (likely ErrCompacted or ErrUnavailable), we don't
 		// know whether it's a match or not, so assume a possible match and return
 		// the index, with 0 term indicating an unknown term.
+		// 如果出现错误（可能是ErrCompacted或ErrUnavailable），我们不知道它是否匹配，所以假设可能匹配并返回索引，
+		// 0 term表示未知的term。
 		if ourTerm, err := l.term(index); err != nil {
 			return index, 0
 		} else if ourTerm <= term {
@@ -454,6 +489,9 @@ func (l *raftLog) maybeCommit(at entryID) bool {
 	// NB: term should never be 0 on a commit because the leader campaigned at
 	// least at term 1. But if it is 0 for some reason, we don't consider this a
 	// term match.
+	// 注意：在提交时，term不应该为0，因为leader至少在term 1上竞选。但是，如果由于某种原因term为0，
+	// 我们不认为这是一个term匹配。
+	// 在提交日志时，除了term!=0外，还要求at处的
 	if at.term != 0 && at.index > l.committed && l.matchTerm(at) {
 		l.commitTo(at.index)
 		return true

@@ -123,11 +123,13 @@ func insertionSort(sl []uint64) {
 
 // CommittedIndex computes the committed index from those supplied via the
 // provided AckedIndexer (for the active config).
+// CommittedIndex 从提供的AckedIndexer中计算出已提交的index(对于活动配置)。
 func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 	n := len(c)
 	if n == 0 {
 		// This plays well with joint quorums which, when one half is the zero
 		// MajorityConfig, should behave like the other half.
+		// MajorityConfig为空时，意味着没有任何节点，所以返回math.MaxUint64
 		return math.MaxUint64
 	}
 
@@ -151,6 +153,8 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 		// left as zero; these correspond to voters that may report in, but
 		// haven't yet. We fill from the right (since the zeroes will end up on
 		// the left after sorting below anyway).
+		// 用观察到的索引填充切片。任何未使用的插槽都将保留为零；这些对应于可能报告的选民，但尚未报告。
+		// 我们从右边开始填充（因为在下面的排序之后，零将最终出现在左边）。
 		i := n - 1
 		for id := range c {
 			if idx, ok := l.AckedIndex(id); ok {
@@ -162,11 +166,14 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 
 	// Sort by index. Use a bespoke algorithm (copied from the stdlib's sort
 	// package) to keep srt on the stack.
+	// 按索引排序。使用自定义算法（从stdlib的sort包中复制）来保持srt在堆栈上。
 	insertionSort(srt)
 
 	// The smallest index into the array for which the value is acked by a
 	// quorum. In other words, from the end of the slice, move n/2+1 to the
 	// left (accounting for zero-indexing).
+	// 从数组的末尾开始，向左移动n/2+1个位置，这个位置的值是由多数节点确认的。
+	// 也就是说，这个位置的值是已经被多数节点确认的。可以视为新的已提交的index。
 	pos := n - (n/2 + 1)
 	return Index(srt[pos])
 }

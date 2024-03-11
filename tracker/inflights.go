@@ -15,6 +15,7 @@
 package tracker
 
 // inflight describes an in-flight MsgApp message.
+// inflight描述了一个正在传输中的MsgApp消息。
 type inflight struct {
 	index uint64 // the index of the last entry inside the message
 	bytes uint64 // the total byte size of the entries in the message
@@ -25,6 +26,8 @@ type inflight struct {
 // use Full() to check whether more messages can be sent, call Add() whenever
 // they are sending a new append, and release "quota" via FreeLE() whenever an
 // ack is received.
+// Inflights限制了发送给follower但尚未被follower确认的MsgApp消息的数量（由Msg中包含的日志条目的最大索引表示）。
+// 调用者使用Full()来检查是否可以发送更多的消息，每当发送一个新的append请求时，调用Add()，并在收到ack时通过FreeLE()释放“配额”。
 type Inflights struct {
 	// the starting index in the buffer
 	start int
@@ -36,6 +39,7 @@ type Inflights struct {
 	maxBytes uint64 // the max total byte size of inflight messages
 
 	// buffer is a ring buffer containing info about all in-flight messages.
+	// buffer是一个环形缓冲区，包含了所有正在传输中的消息的信息。
 	buffer []inflight
 }
 
@@ -95,15 +99,18 @@ func (in *Inflights) grow() {
 }
 
 // FreeLE frees the inflights smaller or equal to the given `to` flight.
+// FreeLE释放小于或等于给定`to`索引值的inflight消息。
 func (in *Inflights) FreeLE(to uint64) {
+	// 如果当前没有已发送但未收到ack的消息，或者该index小于inflights中的第一个消息的index，
+	// 即该index小于inflights中的第一个消息的index，说明该消息已经被收到了，直接返回。
 	if in.count == 0 || to < in.buffer[in.start].index {
 		// out of the left side of the window
 		return
 	}
 
-	idx := in.start
-	var i int
-	var bytes uint64
+	idx := in.start  // 释放完毕后，idx指向inflights中第一个大于to的消息。
+	var i int        // 存储最终要释放的inflight消息的数量
+	var bytes uint64 // 待释放的inflight消息的总字节数
 	for i = 0; i < in.count; i++ {
 		if to < in.buffer[idx].index { // found the first large inflight
 			break
@@ -111,11 +118,13 @@ func (in *Inflights) FreeLE(to uint64) {
 		bytes += in.buffer[idx].bytes
 
 		// increase index and maybe rotate
+		// 注意buffer是一个环形缓冲区，所以当idx+1大于等于size时，需要将idx减去size。
 		size := in.size
 		if idx++; idx >= size {
 			idx -= size
 		}
 	}
+	// 到此，idx指向MsgApp消息是当前inflights中第一个大于to的消息。
 	// free i inflights and set new start index
 	in.count -= i
 	in.bytes -= bytes
@@ -123,6 +132,7 @@ func (in *Inflights) FreeLE(to uint64) {
 	if in.count == 0 {
 		// inflights is empty, reset the start index so that we don't grow the
 		// buffer unnecessarily.
+		// inflights为空，重置start索引，以便我们不必要地增加缓冲区的大小。
 		in.start = 0
 	}
 }

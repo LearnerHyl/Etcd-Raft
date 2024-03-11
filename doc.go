@@ -291,17 +291,25 @@ advancing with the given raftpb.Message. Each step is determined by its
 raftpb.MessageType. Note that every step is checked by one common method
 'Step' that safety-checks the terms of node and incoming message to prevent
 stale log entries:
+raft库使用Protocol Buffer格式发送和接收消息（在raftpb包中定义）。
+每个状态（follower、candidate、leader）在使用给定的raftpb.Message推进时实现自己的“step”方法（“stepFollower”、“stepCandidate”、“stepLeader”）。每个步骤由其raftpb.MessageType确定。
+请注意，每个步骤都由一个公共方法“Step”检查，该方法安全检查节点和传入消息的术语，以防止陈旧的日志条目：
 
 	'MsgHup' is used for election. If a node is a follower or candidate, the
 	'tick' function in 'raft' struct is set as 'tickElection'. If a follower or
 	candidate has not received any heartbeat before the election timeout, it
 	passes 'MsgHup' to its Step method and becomes (or remains) a candidate to
 	start a new election.
+	`MsgHup`用于选举。如果节点是follower或candidate，则在“raft”结构中将“tick”函数设置为“tickElection”。
+	如果follower或candidate在选举超时之前没有收到任何心跳，则将“MsgHup”传递给其Step方法，
+	并成为（或保持）候选人以开始新的选举。
 
 	'MsgBeat' is an internal type that signals the leader to send a heartbeat of
 	the 'MsgHeartbeat' type. If a node is a leader, the 'tick' function in
 	the 'raft' struct is set as 'tickHeartbeat', and triggers the leader to
 	send periodic 'MsgHeartbeat' messages to its followers.
+	`MsgBeat`是一个内部类型，用于通知领导者发送“MsgHeartbeat”类型的心跳。
+	如果节点是领导者，则在“raft”结构中将“tick”函数设置为“tickHeartbeat”，并触发领导者定期向其关注者发送“MsgHeartbeat”消息。
 
 	'MsgProp' proposes to append data to its log entries. This is a special
 	type to redirect proposals to leader. Therefore, send method overwrites
@@ -313,6 +321,12 @@ stale log entries:
 	follower, 'MsgProp' is stored in follower's mailbox(msgs) by the send
 	method. It is stored with sender's ID and later forwarded to leader by
 	rafthttp package.
+	`MsgProp`建议将数据附加到其日志条目。这是一种特殊类型，用于将提案重定向到领导者。
+	因此，send方法使用其HardState的术语覆盖raftpb.Message的术语，以避免将其本地术语附加到“MsgProp”。
+	当“MsgProp”传递给领导者的“Step”方法时，领导者首先调用“appendEntry”方法将条目附加到其日志中，
+	然后调用“bcastAppend”方法将这些条目发送到其对等方。当传递给候选人时，“MsgProp”被丢弃。
+	当传递给follower时，“MsgProp”由send方法存储在follower的邮箱（msgs）中。它与发送者的ID一起存储，
+	稍后由rafthttp包转发给leader。
 
 	'MsgApp' contains log entries to replicate. A leader calls bcastAppend,
 	which calls sendAppend, which sends soon-to-be-replicated logs in 'MsgApp'
@@ -320,11 +334,16 @@ stale log entries:
 	back to follower, because it indicates that there is a valid leader sending
 	'MsgApp' messages. Candidate and follower respond to this message in
 	'MsgAppResp' type.
+	`MsgApp`包含要复制的日志条目。领导者调用bcastAppend，该方法调用sendAppend，该方法以“MsgApp”类型发送即将复制的日志。
+	当“MsgApp”传递给候选人的Step方法时，候选人会恢复为follower，因为它表示有一个有效的领导者发送“MsgApp”消息。
+	候选人和follower以“MsgAppResp”类型响应此消息。
 
 	'MsgAppResp' is response to log replication request('MsgApp'). When
 	'MsgApp' is passed to candidate or follower's Step method, it responds by
 	calling 'handleAppendEntries' method, which sends 'MsgAppResp' to raft
 	mailbox.
+	`MsgAppResp`是对日志复制请求（'MsgApp'）的响应。当“MsgApp”传递给候选人或follower的Step方法时，
+	它通过调用“handleAppendEntries”方法响应，该方法将“MsgAppResp”发送到raft邮箱(msgs)。
 
 	'MsgVote' requests votes for election. When a node is a follower or
 	candidate and 'MsgHup' is passed to its Step method, then the node calls
@@ -338,18 +357,29 @@ stale log entries:
 	sender only when sender's last term is greater than MsgVote's term or
 	sender's last term is equal to MsgVote's term but sender's last committed
 	index is greater than or equal to follower's.
+	`MsgVote`请求选举投票。当节点是follower或candidate，并且将“MsgHup”传递给其Step方法时，
+	然后节点调用“campaign”方法来竞选成为领导者。一旦调用了“campaign”方法，节点就会成为候选人，
+	并向集群中的对等方发送“MsgVote”以请求投票。当传递给领导者或候选人的Step方法并且消息的Term低于领导者或候选人的Term时，
+	“MsgVote”将被拒绝（返回带有Reject true的“MsgVoteResp”）。如果领导者或候选人收到了更高term的“MsgVote”，
+	它将恢复为follower。当“MsgVote”传递给follower时，只有当发送者的最后一个term大于MsgVote的term或发送者的最后一个term等于MsgVote的term，
+	但发送者的最后一个提交的索引大于或等于follower's时，它才为发送者投票。
 
 	'MsgVoteResp' contains responses from voting request. When 'MsgVoteResp' is
 	passed to candidate, the candidate calculates how many votes it has won. If
 	it's more than majority (quorum), it becomes leader and calls 'bcastAppend'.
 	If candidate receives majority of votes of denials, it reverts back to
 	follower.
+	`MsgVoteResp`包含投票请求的响应。当`MsgVoteResp`传递给候选人时，候选人计算它赢得了多少票。如果它超过了多数（法定人数），
+	它将成为领导者并调用`bcastAppend`。如果候选人收到了否决的多数票，它将恢复为follower。
 
 	'MsgPreVote' and 'MsgPreVoteResp' are used in an optional two-phase election
 	protocol. When Config.PreVote is true, a pre-election is carried out first
 	(using the same rules as a regular election), and no node increases its term
 	number unless the pre-election indicates that the campaigning node would win.
 	This minimizes disruption when a partitioned node rejoins the cluster.
+	`MsgPreVote`和`MsgPreVoteResp`在可选的两阶段选举协议中使用。当Config.PreVote为true时，
+	首先进行预选举（使用与常规选举相同的规则），除非预选举表明竞选节点将获胜，否则没有节点会增加其Term号。
+	当分区节点重新加入集群时，这将最小化中断。
 
 	'MsgSnap' requests to install a snapshot message. When a node has just
 	become a leader or the leader receives 'MsgProp' message, it calls

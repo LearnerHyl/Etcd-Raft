@@ -53,6 +53,7 @@ type Ready struct {
 	// The current volatile state of a Node.
 	// SoftState will be nil if there is no update.
 	// It is not required to consume or store SoftState.
+	// 节点的当前易失性状态。如果没有更新，则SoftState将为nil。不需要消耗或存储SoftState。
 	*SoftState
 
 	// The current state of a Node to be saved to stable storage BEFORE
@@ -63,12 +64,16 @@ type Ready struct {
 	// If async storage writes are enabled, this field does not need to be acted
 	// on immediately. It will be reflected in a MsgStorageAppend message in the
 	// Messages slice.
+	// 节点的当前状态在消息发送之前保存到稳定存储中。如果没有更新，HardState将等于空状态。
+	// 如果启用了异步存储写入，则不需要立即对此字段进行操作。它将在Messages切片中的MsgStorageAppend消息中反映出来。
 	pb.HardState
 
 	// ReadStates can be used for node to serve linearizable read requests locally
 	// when its applied index is greater than the index in ReadState.
 	// Note that the readState will be returned when raft receives msgReadIndex.
 	// The returned is only valid for the request that requested to read.
+	// 当节点的appliedIndex大于ReadState中的索引时，ReadStates可以用于节点本地提供线性读请求。
+	// 请注意，当raft接收到msgReadIndex时，将返回readState。返回值仅对请求读取的请求有效。
 	ReadStates []ReadState
 
 	// Entries specifies entries to be saved to stable storage BEFORE
@@ -77,6 +82,7 @@ type Ready struct {
 	// If async storage writes are enabled, this field does not need to be acted
 	// on immediately. It will be reflected in a MsgStorageAppend message in the
 	// Messages slice.
+	// 如果启用了async storage writes，则不需要立即对此字段进行操作。它将在Messages切片中的MsgStorageAppend消息中反映出来。
 	Entries []pb.Entry
 
 	// Snapshot specifies the snapshot to be saved to stable storage.
@@ -84,6 +90,8 @@ type Ready struct {
 	// If async storage writes are enabled, this field does not need to be acted
 	// on immediately. It will be reflected in a MsgStorageAppend message in the
 	// Messages slice.
+	// Snapshot指定要保存到稳定存储中的快照。
+	// 如果启用了async storage writes，则不需要立即对此字段进行操作。它将在Messages切片中的MsgStorageAppend消息中反映出来。
 	Snapshot pb.Snapshot
 
 	// CommittedEntries specifies entries to be committed to a
@@ -93,6 +101,8 @@ type Ready struct {
 	// If async storage writes are enabled, this field does not need to be acted
 	// on immediately. It will be reflected in a MsgStorageApply message in the
 	// Messages slice.
+	// CommittedEntries指定要提交到存储/状态机的条目。这些条目先前已附加到稳定存储中。
+	// 如果启用了async storage writes，则不需要立即对此字段进行操作。它将在Messages切片中的MsgStorageApply消息中反映出来。
 	CommittedEntries []pb.Entry
 
 	// Messages specifies outbound messages.
@@ -107,10 +117,14 @@ type Ready struct {
 	//
 	// If it contains a MsgSnap message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
+	// Messages指定该节点需要发送的消息。
+	// 如果未启用async storage writes，则这些消息必须在Entries附加到稳定存储之后发送。
+	// 如果启用了async storage writes，则这些消息可以立即发送，因为当消息MsgStorage{Append,Apply}附加到Messages中时，则意味着该异步写入已完成。
 	Messages []pb.Message
 
 	// MustSync indicates whether the HardState and Entries must be durably
 	// written to disk or if a non-durable write is permissible.
+	// MustSync指示是否必须将HardState和Entries耐久地写入磁盘，或者是否允许非耐久性写入。
 	MustSync bool
 }
 
@@ -132,11 +146,14 @@ func IsEmptySnap(sp pb.Snapshot) bool {
 type Node interface {
 	// Tick increments the internal logical clock for the Node by a single tick. Election
 	// timeouts and heartbeat timeouts are in units of ticks.
+	// Tick方法通过一个时钟周期增加节点的内部逻辑时钟。选举超时和心跳超时的单位是时钟周期。
 	Tick()
 	// Campaign causes the Node to transition to candidate state and start campaigning to become leader.
+	// Campaign方法导致节点转换为候选人状态，并开始竞选成为领导者。
 	Campaign(ctx context.Context) error
 	// Propose proposes that data be appended to the log. Note that proposals can be lost without
 	// notice, therefore it is user's job to ensure proposal retries.
+	// Propose方法建议将数据附加到日志中。请注意，propose可能会在不通知应用层的情况下丢失，因此用户需要确保propose重试机制。
 	Propose(ctx context.Context, data []byte) error
 	// ProposeConfChange proposes a configuration change. Like any proposal, the
 	// configuration change may be dropped with or without an error being
@@ -150,9 +167,14 @@ type Node interface {
 	// message is only allowed if all Nodes participating in the cluster run a
 	// version of this library aware of the V2 API. See pb.ConfChangeV2 for
 	// usage details and semantics.
+	// ProposeConfChange提议配置更改。与任何提议一样，配置更改可能会被丢弃，也可能会返回错误。特别是，除非领导者确定其日志中没有未应用的配置更改，否则将丢弃配置更改。
+	// 该方法接受pb.ConfChange（已弃用）或pb.ConfChangeV2消息。
+	// 后者允许通过联合共识进行任意配置更改，特别是包括替换投票者。
+	// 仅当参与集群的所有节点运行的版本都知道V2 API时，才允许传递ConfChangeV2消息。有关用法详细信息和语义，请参见pb.ConfChangeV2。
 	ProposeConfChange(ctx context.Context, cc pb.ConfChangeI) error
 
 	// Step advances the state machine using the given message. ctx.Err() will be returned, if any.
+	// Step方法使用给定的消息推进状态机。如果有，则返回ctx.Err()。
 	Step(ctx context.Context, msg pb.Message) error
 
 	// Ready returns a channel that returns the current point-in-time state.
@@ -161,6 +183,8 @@ type Node interface {
 	//
 	// NOTE: No committed entries from the next Ready may be applied until all committed entries
 	// and snapshots from the previous one have finished.
+	// Ready返回一个Channel，该Channel返回当前的即时状态。节点的用户必须在检索Ready返回的状态后调用Advance（除非启用了async storage writes，在启用异步存储写入的情况下永远不应该调用Advance函数）。
+	// 注意：在上一个Ready的所有已提交条目和快照都完成之前，不得应用下一个Ready中的已提交条目。
 	Ready() <-chan Ready
 
 	// Advance notifies the Node that the application has saved progress up to the last Ready.
@@ -175,6 +199,10 @@ type Node interface {
 	//
 	// NOTE: Advance must not be called when using AsyncStorageWrites. Response messages from the
 	// local append and apply threads take its place.
+	// Advance通知Node应用程序已将进度保存到最后一个Ready。因此，Node准备返回下一个可用的Ready。
+	// 应用程序通常在应用最后一个Ready中的条目后调用Advance。
+	// 但是，作为优化，应用程序可以在应用命令时调用Advance。例如，当最后一个Ready包含快照时，应用程序可能需要很长时间来应用快照数据。为了继续接收Ready而不阻塞raft的进度，它可以在完成应用最后一个ready之前调用Advance。
+	// 注意：在使用AsyncStorageWrites时，不得调用Advance。local append和apply线程的响应Messages代替了Advance。
 	Advance()
 	// ApplyConfChange applies a config change (previously passed to
 	// ProposeConfChange) to the node. This must be called whenever a config
@@ -184,9 +212,13 @@ type Node interface {
 	//
 	// Returns an opaque non-nil ConfState protobuf which must be recorded in
 	// snapshots.
+	// ApplyConfChange将配置更改（先前传递给ProposeConfChange的命令）应用到节点。
+	// 每当在Ready.CommittedEntries中观察到配置更改时，都必须调用此方法，除非应用程序决定拒绝配置更改（即将其视为no-op操作），在这种情况下，不得调用此方法。
+	// 返回一个不透明的非nil的ConfState protobuf(grpc的一种序列化协议)，该protobuf必须记录在快照中。
 	ApplyConfChange(cc pb.ConfChangeI) *pb.ConfState
 
 	// TransferLeadership attempts to transfer leadership to the given transferee.
+	// TransferLeadership尝试将领导权转移给给定的接收者。
 	TransferLeadership(ctx context.Context, lead, transferee uint64)
 
 	// ForgetLeader forgets a follower's current leader, changing it to None. It
@@ -213,6 +245,14 @@ type Node interface {
 	//
 	// This does nothing with ReadOnlyLeaseBased, since it would allow a new
 	// leader to be elected without the old leader knowing.
+	// ForgetLeader忘记跟随者的当前领导者，将其更改为None。它在当前任期中仍然是一个无领导的跟随者，不会进行竞选。
+	// 这在PreVote+CheckQuorum中很有用，因为通常情况下，如果跟随者在过去的选举超时间隔内听到过领导者的消息，它们通常不会授予pre-votes给候选人。
+	// 无领导的跟随者可以立即授予pre-votes，因此如果大多数跟随者有充分的理由相信领导者已经死亡（例如通过side-channel或外部故障检测器），并且忘记了它，那么它们可以立即选举新的领导者，而不必等待选举超时。
+	// 如果它们再次听到领导者的消息，它们将恢复为正常的跟随者，或者在选举超时时转换为候选人。
+	// 例如，考虑一个三节点集群，其中1是领导者，2+3刚刚收到了来自1的心跳。如果2和3相信领导者现在已经死亡（也许它们知道编排系统关闭了1的VM），我们可以指示2忘记领导者，3进行竞选。
+	// 然后2将能够授予3的pre-vote，并立即选举3为领导者（通常情况下，2会拒绝投票，直到选举超时结束，因为它最近听到了领导者的消息）。
+	// 但是，3不能单方面进行竞选，必须有大多数节点同意领导者已经死亡，这样可以避免在个别节点错误地认为领导者已经死亡时干扰领导者。
+	// 这在ReadOnlyLeaseBased中无效，因为它会允许新的领导者在旧的领导者不知道的情况下被选举。
 	ForgetLeader(ctx context.Context) error
 
 	// ReadIndex request a read state. The read state will be set in the ready.
@@ -221,11 +261,15 @@ type Node interface {
 	// processed safely. The read state will have the same rctx attached.
 	// Note that request can be lost without notice, therefore it is user's job
 	// to ensure read index retries.
+	// ReadIndex请求一个read state。read state将设置在ready中。read state具有一个read index。一旦应用程序进度超过read index，那么在发出read请求之前的任何线性读请求都可以安全地处理。read state将附加相同的rctx。
+	// 请注意，请求可能会在没有通知的情况下丢失，因此用户需要确保read index重试。
 	ReadIndex(ctx context.Context, rctx []byte) error
 
 	// Status returns the current status of the raft state machine.
+	// Status返回raft状态机的当前状态。
 	Status() Status
 	// ReportUnreachable reports the given node is not reachable for the last send.
+	// ReportUnreachable报告最后一次发送的给定节点不可达。
 	ReportUnreachable(id uint64)
 	// ReportSnapshot reports the status of the sent snapshot. The id is the raft ID of the follower
 	// who is meant to receive the snapshot, and the status is SnapshotFinish or SnapshotFailure.
@@ -237,8 +281,14 @@ type Node interface {
 	// updates from the leader. Therefore, it is crucial that the application ensures that any
 	// failure in snapshot sending is caught and reported back to the leader; so it can resume raft
 	// log probing in the follower.
+	// ReportSnapshot报告发送的快照的状态。id是应该接收快照的跟随者的raft ID，status是SnapshotFinish或SnapshotFailure。使用SnapshotFinish调用ReportSnapshot是一个空操作。
+	// 但是，应该将任何应用快照失败（例如，从领导者流式传输到跟随者时）报告给领导者。当领导者向某个跟随者发送快照时，
+	// 它会暂停对当前follower的raft日志推进，直到跟随者能够应用快照并推进其状态。这意味着在当前follower应用快照之前，领导者不会向其发送任何新的日志条目。
+	// 如果跟随者无法做到这一点，例如由于崩溃，它可能会陷入僵局，永远不会从领导者那里获得任何更新。
+	// 因此，应用程序必须确保捕获并报告快照发送失败，以便它可以恢复跟随者中的raft日志探测。
 	ReportSnapshot(id uint64, status SnapshotStatus)
 	// Stop performs any necessary termination of the Node.
+	// Stop执行节点的任何必要终止操作。
 	Stop()
 }
 
@@ -294,6 +344,7 @@ type msgWithResult struct {
 }
 
 // node is the canonical implementation of the Node interface
+// node是Node接口的规范实现
 type node struct {
 	propc      chan msgWithResult
 	recvc      chan pb.Message

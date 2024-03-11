@@ -114,9 +114,12 @@ func (c *Config) Clone() Config {
 // ProgressTracker tracks the currently active configuration and the information
 // known about the nodes and learners in it. In particular, it tracks the match
 // index for each peer which in turn allows reasoning about the committed index.
+// ProgressTracker 跟踪当前活动的配置以及关于其中的节点和学习者的信息。特别是，它跟踪每个raft peer的match index，
+// 这反过来又允许推断出已提交的index。
 type ProgressTracker struct {
 	Config
 
+	// Progress维护了每个peer的日志复制进度。
 	Progress ProgressMap
 
 	Votes map[uint64]bool
@@ -176,7 +179,9 @@ func (l matchAckIndexer) AckedIndex(id uint64) (quorum.Index, bool) {
 
 // Committed returns the largest log index known to be committed based on what
 // the voting members of the group have acknowledged.
+// Committed返回已知要被提交的最大日志索引，这是基于当前raft group中的投票成员所确认的。
 func (p *ProgressTracker) Committed() uint64 {
+	// 这里将p.Progress转换为matchAckIndexer类型，然后调用quorum.CommittedIndex方法
 	return uint64(p.Voters.CommittedIndex(matchAckIndexer(p.Progress)))
 }
 

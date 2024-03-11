@@ -403,13 +403,20 @@ type Message struct {
 	// logTerm is generally used for appending Raft logs to followers. For example,
 	// (type=MsgApp,index=100,logTerm=5) means the leader appends entries starting
 	// at index=101, and the term of the entry at index 100 is 5.
+	// logTerm通常用于向跟随者附加Raft日志。例如，（type=MsgApp，index=100，logTerm=5）表示领导者附加从index=101开始的条目，
+	// 并且索引100处的条目的期限为5。
+
 	// (type=MsgAppResp,reject=true,index=100,logTerm=5) means follower rejects some
 	// entries from its leader as it already has an entry with term 5 at index 100.
+	// （type=MsgAppResp，reject=true，index=100，logTerm=5）表示跟随者拒绝其领导者的一些条目，因为它在索引100处已经有一个期限为5的条目。
+
 	// (type=MsgStorageAppendResp,index=100,logTerm=5) means the local node wrote
 	// entries up to index=100 in stable storage, and the term of the entry at index
 	// 100 was 5. This doesn't always mean that the corresponding MsgStorageAppend
 	// message was the one that carried these entries, just that those entries were
 	// stable at the time of processing the corresponding MsgStorageAppend.
+	// （type=MsgStorageAppendResp，index=100，logTerm=5）表示本地节点将条目写入了稳定存储，索引100处的条目的期限为5。
+	// 这并不总是意味着相应的MsgStorageAppend消息是携带这些条目的消息，只是这些条目在处理相应的MsgStorageAppend时是稳定的。
 	LogTerm uint64  `protobuf:"varint,5,opt,name=logTerm" json:"logTerm"`
 	Index   uint64  `protobuf:"varint,6,opt,name=index" json:"index"`
 	Entries []Entry `protobuf:"bytes,7,rep,name=entries" json:"entries"`
@@ -419,11 +426,16 @@ type Message struct {
 	// will either all be set (to facilitate the construction of a HardState) if
 	// any of the fields have changed or will all be unset if none of the fields
 	// have changed.
+	// （type=MsgStorageAppend，vote=5，term=10）表示本地节点正在为第10任期的5号节点投票。对于MsgStorageAppends，
+	// 如果任何字段发生了变化，那么term、vote和commit字段都将被设置（以便构造HardState），
+	// 如果没有任何字段发生变化，那么所有字段都将被取消设置。
 	Vote uint64 `protobuf:"varint,13,opt,name=vote" json:"vote"`
 	// snapshot is non-nil and non-empty for MsgSnap messages and nil for all other
 	// message types. However, peer nodes running older binary versions may send a
 	// non-nil, empty value for the snapshot field of non-MsgSnap messages. Code
 	// should be prepared to handle such messages.
+	// 对于MsgSnap消息，snapshot是非nil且非空的，对于所有其他消息类型，它是nil。但是，运行旧二进制版本的对等节点可能会发送非nil的空值，
+	// 用于非MsgSnap消息的快照字段。代码应该准备好处理这样的消息。
 	Snapshot   *Snapshot `protobuf:"bytes,9,opt,name=snapshot" json:"snapshot,omitempty"`
 	Reject     bool      `protobuf:"varint,10,opt,name=reject" json:"reject"`
 	RejectHint uint64    `protobuf:"varint,11,opt,name=rejectHint" json:"rejectHint"`
@@ -431,6 +443,7 @@ type Message struct {
 	// responses are populated by a raft node to instruct storage threads on how
 	// to respond and who to respond to when the work associated with a message
 	// is complete. Populated for MsgStorageAppend and MsgStorageApply messages.
+	// 响应由raft节点填充，以指示存储线程在与消息关联的工作完成时如何响应以及响应给谁。对于MsgStorageAppend和MsgStorageApply消息进行填充。
 	Responses []Message `protobuf:"bytes,14,rep,name=responses" json:"responses"`
 }
 

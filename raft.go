@@ -71,9 +71,11 @@ const (
 const (
 	// campaignPreElection represents the first phase of a normal election when
 	// Config.PreVote is true.
+	// campaignPreElection 表示Config.PreVote为true时正常选举的第一阶段
 	campaignPreElection CampaignType = "CampaignPreElection"
 	// campaignElection represents a normal (time-based) election (the second phase
 	// of the election when Config.PreVote is true).
+	// campaignElection 表示正常（基于时间的）选举（Config.PreVote为true时的第二阶段）
 	campaignElection CampaignType = "CampaignElection"
 	// campaignTransfer represents the type of leader transfer
 	campaignTransfer CampaignType = "CampaignTransfer"
@@ -344,8 +346,8 @@ type raft struct {
 	readStates []ReadState
 
 	// the log
-	raftLog *raftLog
 
+	raftLog            *raftLog
 	maxMsgSize         entryEncodingSize
 	maxUncommittedSize entryPayloadSize
 
@@ -384,6 +386,9 @@ type raft struct {
 	// configuration change (if any). Config changes are only allowed to
 	// be proposed if the leader's applied index is greater than this
 	// value.
+	// 只有一个配置变更可以是挂起的（在日志中，但尚未应用）。
+	// 这是通过pendingConfIndex强制执行的，该值设置为>=最新挂起的配置更改的日志索引（如果有）。
+	// 只有当leader的应用索引大于此值时，才允许提议配置更改。
 	pendingConfIndex uint64
 	// disableConfChangeValidation is Config.DisableConfChangeValidation,
 	// see there for details.
@@ -599,6 +604,9 @@ func (r *raft) sendAppend(to uint64) {
 // argument controls whether messages with no entries will be sent
 // ("empty" messages are useful to convey updated Commit indexes, but
 // are undesirable when we're sending multiple messages in a batch).
+// 如果有必要的话，maybeSendAppend 发送带有新条目的append RPC到给定的peer。
+// 如果发送了消息，则返回true。sendIfEmpty参数控制是否发送没有条目的消息
+// （“空”消息对于传达更新的提交索引很有用，但在批量发送多条消息时是不希望的）。
 func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	pr := r.trk.Progress[to]
 	if pr.IsPaused() {
@@ -610,6 +618,7 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	if err != nil {
 		// The log probably got truncated at >= pr.Next, so we can't catch up the
 		// follower log anymore. Send a snapshot instead.
+		// 日志可能在>=pr.Next处被截断，因此我们无法再追赶追随者日志。发送快照。
 		return r.maybeSendSnapshot(to, pr)
 	}
 
@@ -620,6 +629,8 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	// MsgApp will eventually reach the follower (heartbeats responses prompt the
 	// leader to send an append), allowing it to be acked or rejected, both of
 	// which will clear out Inflights.
+	// 在受限的StateReplicate状态下，只发送空的MsgApp，以确保进度。
+	// 否则，如果我们有一个完整的Inflights并且所有的inflight消息实际上都被丢弃了，那么复制到该follower将会停滞。
 	if pr.State != tracker.StateReplicate || !pr.Inflights.Full() {
 		ents, err = r.raftLog.entries(pr.Next, r.maxMsgSize)
 	}
@@ -760,6 +771,9 @@ func (r *raft) appliedSnap(snap *pb.Snapshot) {
 // maybeCommit attempts to advance the commit index. Returns true if the commit
 // index changed (in which case the caller should call r.bcastAppend). This can
 // only be called in StateLeader.
+// maybeCommit尝试推进commitIndex。
+// 如果commitIndex更改，则返回true（在这种情况下，调用者应调用r.bcastAppend）。这只能在StateLeader中调用。
+// 很显然commitIndex后马上调用r.bcastAppend，是为了让其他节点也能及时更新自己的commitIndex
 func (r *raft) maybeCommit() bool {
 	return r.raftLog.maybeCommit(entryID{term: r.Term, index: r.trk.Committed()})
 }
@@ -1264,6 +1278,7 @@ func stepLeader(r *raft, m pb.Message) error {
 			// If we are not currently a member of the range (i.e. this node
 			// was removed from the configuration while serving as leader),
 			// drop any new proposals.
+			// 如果我们当前不是范围的成员（即在担任领导者时从配置中删除了此节点），则丢弃任何新提案。
 			return ErrProposalDropped
 		}
 		if r.leadTransferee != None {
@@ -1348,6 +1363,8 @@ func stepLeader(r *raft, m pb.Message) error {
 	case pb.MsgAppResp:
 		// NB: this code path is also hit from (*raft).advance, where the leader steps
 		// an MsgAppResp to acknowledge the appended entries in the last Ready.
+		// NB：此代码路径也会从(*raft).advance命中，其中领导者主动steps一条MsgAppResp消息
+		// 以确认最后一个Ready中的附加条目。
 
 		pr.RecentActive = true
 
@@ -1357,6 +1374,8 @@ func stepLeader(r *raft, m pb.Message) error {
 			// term that the follower has at index RejectHint. Older versions
 			// of this library did not populate LogTerm for rejections and it
 			// is zero for followers with an empty log.
+			// RejectHint是建议用于附加的下一个基本条目（即我们尝试附加条目RejectHint+1），
+			// LogTerm是跟随者在索引RejectHint处的任期。 旧版本的此库不会为rejections填充LogTerm，并且对于具有空日志的跟随者，它为零。
 			//
 			// Under normal circumstances, the leader's log is longer than the
 			// follower's and the follower's log is a prefix of the leader's
@@ -1364,6 +1383,8 @@ func stepLeader(r *raft, m pb.Message) error {
 			// follower). In that case, the first probe reveals where the
 			// follower's log ends (RejectHint=follower's last index) and the
 			// subsequent probe succeeds.
+			// 在正常情况下，领导者的日志比跟随者的日志长，跟随者的日志是领导者的前缀（即跟随者的日志没有发散的未提交后缀）。
+			// 在这种情况下，第一个探测揭示了跟随者的日志结束的地方（RejectHint=跟随者的最后索引），随后的探测成功。
 			//
 			// However, when networks are partitioned or systems overloaded,
 			// large divergent log tails can occur. The naive attempt, probing
@@ -1372,12 +1393,16 @@ func stepLeader(r *raft, m pb.Message) error {
 			// which can easily result in hours of time spent probing and can
 			// even cause outright outages. The probes are thus optimized as
 			// described below.
+			// 但是，当网络被分区或系统超载时，可能会出现大量发散的日志尾部。
+			// 朴素的尝试，按降序逐个探测条目，将是发散尾部的长度和网络往返延迟的乘积，
+			// 这很容易导致数小时的探测时间，甚至可能导致完全的中断。 因此，探测被优化如下所述。
 			r.logger.Debugf("%x received MsgAppResp(rejected, hint: (index %d, term %d)) from %x for index %d",
 				r.id, m.RejectHint, m.LogTerm, m.From, m.Index)
 			nextProbeIdx := m.RejectHint
 			if m.LogTerm > 0 {
 				// If the follower has an uncommitted log tail, we would end up
 				// probing one by one until we hit the common prefix.
+				// 如果跟随者有一个未提交的日志尾部，我们将逐个探测，直到我们找到公共前缀。
 				//
 				// For example, if the leader has:
 				//
@@ -1390,10 +1415,13 @@ func stepLeader(r *raft, m pb.Message) error {
 				// would receive a RejectHint of 6 and LogTerm of 2. Without the
 				// code below, we would try an append at index 6, which would
 				// fail again.
+				// 然后，在发送一个以（idx=9，term=5）为锚点的附加后，我们将收到RejectHint为6和LogTerm为2。
+				// 如果没有下面的代码，我们将尝试在索引6处附加，这将再次失败。
 				//
 				// However, looking only at what the leader knows about its own
 				// log and the rejection hint, it is clear that a probe at index
 				// 6, 5, 4, 3, and 2 must fail as well:
+				// 但是，仅查看领导者对自己的日志和拒绝提示的了解，很明显，索引6、5、4、3和2的探测也必须失败：
 				//
 				// For all of these indexes, the leader's log term is larger than
 				// the rejection's log term. If a probe at one of these indexes
@@ -1401,17 +1429,24 @@ func stepLeader(r *raft, m pb.Message) error {
 				// i.e. 3 or 5 in this example. But the follower already told the
 				// leader that it is still at term 2 at index 6, and since the
 				// log term only ever goes up (within a log), this is a contradiction.
+				// 对于所有这些索引，领导者的日志任期都大于拒绝的日志任期。
+				// 如果这些索引中的一个探测成功，那么它在该索引处的日志任期将与领导者的日志任期匹配，即在此示例中为3或5。
+				// 但是，跟随者已经告诉领导者，它在索引6处仍然处于任期2，并且由于日志任期只会增加（在日志中），这是一个矛盾。
 				//
 				// At index 1, however, the leader can draw no such conclusion,
 				// as its term 1 is not larger than the term 2 from the
 				// follower's rejection. We thus probe at 1, which will succeed
 				// in this example. In general, with this approach we probe at
 				// most once per term found in the leader's log.
+				// 但是，在索引1处，领导者无法得出这样的结论，因为它的任期1不大于跟随者的拒绝的任期2。
+				// 因此，我们在1处进行探测，在这个例子中将成功。 通常，使用这种方法，我们在领导者的日志中找到的每个任期中最多探测一次。
 				//
 				// There is a similar mechanism on the follower (implemented in
 				// handleAppendEntries via a call to findConflictByTerm) that is
 				// useful if the follower has a large divergent uncommitted log
 				// tail[1], as in this example:
+				// 在跟随者上有一个类似的机制（通过调用findConflictByTerm在handleAppendEntries中实现），
+				// 如果跟随者有一个大的发散的未提交的日志尾部[1]，则这是有用的，如下例所示：
 				//
 				//   idx        1 2 3 4 5 6 7 8 9
 				//              -----------------
@@ -1427,6 +1462,11 @@ func stepLeader(r *raft, m pb.Message) error {
 				// over linear probing as term 5 is above the leader's term 3 for that
 				// and many preceding indexes; the leader would have to probe linearly
 				// until it would finally hit index 3, where the probe would succeed.
+				// 朴素地，领导者将在idx=9处进行探测，收到一个拒绝，揭示了跟随者的日志任期为6。
+				// 由于领导者在前一个索引处的任期已经小于6，因此上面讨论的领导者端优化是无效的。
+				// 因此，领导者在索引8处进行探测，并且朴素地，收到了相同索引和日志任期5的拒绝。
+				// 同样，领导者优化不会改善线性探测，因为任期5高于领导者的任期3，对于该索引和许多前面的索引；
+				// 领导者必须线性探测，直到最终到达索引3，探测才会成功。
 				//
 				// Instead, we apply a similar optimization on the follower. When the
 				// follower receives the probe at index 8 (log term 3), it concludes
@@ -1435,11 +1475,17 @@ func stepLeader(r *raft, m pb.Message) error {
 				// of 3 or below is index 3. The follower will thus return a rejection
 				// for index=3, log term=3 instead. The leader's next probe will then
 				// succeed at that index.
+				// 相反，我们在跟随者上应用了类似的优化。 当跟随者在索引8（日志任期3）处收到探测时，
+				// 它得出结论：领导者的所有日志在该索引之前的索引都具有3或更低的日志任期。
+				// 具有3或更低日志任期的跟随者日志中的最大索引是索引3。 因此，跟随者将返回索引=3，日志任期=3的rejectHint。
+				// 领导者的下一个探测将在该索引处成功。
 				//
 				// [1]: more precisely, if the log terms in the large uncommitted
 				// tail on the follower are larger than the leader's. At first,
 				// it may seem unintuitive that a follower could even have such
 				// a large tail, but it can happen:
+				// [1]：更准确地说，如果跟随者上大量未提交的尾部中的日志任期大于领导者的日志任期。
+				// 乍一看，跟随者甚至可能有这样一个大的尾部似乎有些不合逻辑，但它确实可能发生：
 				//
 				// 1. Leader appends (but does not commit) entries 2 and 3, crashes.
 				//   idx        1 2 3 4 5 6 7 8 9
@@ -1470,6 +1516,8 @@ func stepLeader(r *raft, m pb.Message) error {
 				//    7, the rejection points it at the end of the follower's log
 				//    which is at a higher log term than the actually committed
 				//    log.
+				// 4. 现在，领导者将在索引7处探测重回集群的跟随者，rejectHint将其指向跟随者日志的末尾，
+				// 而跟随者日志的末尾的日志任期高于实际提交的日志。
 				nextProbeIdx, _ = r.raftLog.findConflictByTerm(m.RejectHint, m.LogTerm)
 			}
 			if pr.MaybeDecrTo(m.Index, nextProbeIdx) {
@@ -1489,6 +1537,12 @@ func stepLeader(r *raft, m pb.Message) error {
 			// equals pr.Match we know we don't m.Index+1 in our log, so moving
 			// back to replicating state is not useful; besides pr.PendingSnapshot
 			// would prevent it.
+			// 如果response更新了我们的matchIndex，或者response可以将探测的目标follower
+			// 重新转换为StateReplicate(参见heartbeat_rep_recovers_from_probing.txt)，
+			// 这两种情况下我们想要更新我们的tracking。
+			// 注意：对于StateSnapshot来说，这种情况是没有意义的，如果`m.Index`等于pr.Match，
+			// 我们知道我们的日志中没有m.Index+1，因此回到stateReplicate状态是没有用的；
+			// 此外，pr.PendingSnapshot将阻止这种情况。
 			if pr.MaybeUpdate(m.Index) || (pr.Match == m.Index && pr.State == tracker.StateProbe) {
 				switch {
 				case pr.State == tracker.StateProbe:
@@ -1500,12 +1554,19 @@ func stepLeader(r *raft, m pb.Message) error {
 					// the follower from the log, we will accept it. This gives
 					// systems more flexibility in how they implement snapshots;
 					// see the comments on PendingSnapshot.
+					// 注意，在这个分支中，我们不考虑PendingSnapshot。无论快照实际应用在哪个索引，
+					// 只要这个快照允许follower从日志中赶上，我们就会接受它。这使得系统在实现快照时更加灵活；
+					// 请参阅PendingSnapshot的注释。
 					r.logger.Debugf("%x recovered from needing snapshot, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
 					// Transition back to replicating state via probing state
 					// (which takes the snapshot into account). If we didn't
 					// move to replicating state, that would only happen with
 					// the next round of appends (but there may not be a next
 					// round for a while, exposing an inconsistent RaftStatus).
+					// 通过StateProbe（考虑到快照）转换回StateReplicate状态。
+					// 如果我们没有转换到StateReplicate状态，那只会在下一轮Append操作中发生
+					// （但可能有一段时间没有下一轮Append操作，从而暴露了不一致的RaftStatus）。
+					// Probe->Replicate,这是为了从快照状态平稳过渡到复制状态
 					pr.BecomeProbe()
 					pr.BecomeReplicate()
 				case pr.State == tracker.StateReplicate:
@@ -1515,11 +1576,13 @@ func stepLeader(r *raft, m pb.Message) error {
 				if r.maybeCommit() {
 					// committed index has progressed for the term, so it is safe
 					// to respond to pending read index requests
+					// 提交的索引已经进展到了这个任期，所以可以安全地响应挂起的读索引请求
 					releasePendingReadIndexMessages(r)
 					r.bcastAppend()
 				} else if oldPaused {
 					// If we were paused before, this node may be missing the
 					// latest commit index, so send it.
+					// 如果之前被暂停，这个节点可能缺少最新的提交索引，所以发送它。
 					r.sendAppend(m.From)
 				}
 				// We've updated flow control information above, which may
@@ -1528,11 +1591,15 @@ func stepLeader(r *raft, m pb.Message) error {
 				// replicate, or when freeTo() covers multiple messages). If
 				// we have more entries to send, send as many messages as we
 				// can (without sending empty messages for the commit index)
+				// 我们已经在上面更新了Inflights的信息，这可能允许我们一次发送多个（大小受限）的in-flight消息。
+				// （例如，从探测状态转换到复制状态时，或者freeTo()释放了多个消息时）。
+				// 如果我们有更多的条目要发送，尽可能多地发送消息（而不发送空消息以提交索引）
 				if r.id != m.From {
 					for r.maybeSendAppend(m.From, false /* sendIfEmpty */) {
 					}
 				}
 				// Transfer leadership is in progress.
+				// 领导权转移正在进行中。
 				if m.From == r.leadTransferee && pr.Match == r.raftLog.lastIndex() {
 					r.logger.Infof("%x sent MsgTimeoutNow to %x after received MsgAppResp", r.id, m.From)
 					r.sendTimeoutNow(m.From)
@@ -1757,12 +1824,16 @@ func logSliceFromMsgApp(m *pb.Message) logSlice {
 func (r *raft) handleAppendEntries(m pb.Message) {
 	// TODO(pav-kv): construct logSlice up the stack next to receiving the
 	// message, and validate it before taking any action (e.g. bumping term).
+	// 首先，从MsgApp消息中提取出追加的日志条目。
 	a := logSliceFromMsgApp(&m)
 
+	/* 如果Leader的append操作的prevLogIndex小于当前节点的commitIndex，
+	则说明Leader的日志已经过期，当前节点不会接受Leader的append操作。*/
 	if a.prev.index < r.raftLog.committed {
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
 		return
 	}
+	// 尝试将日志追加到当前节点的日志中。若追加失败，意味着prev信息不匹配，继续向下走流程。
 	if mlastIndex, ok := r.raftLog.maybeAppend(a, m.Commit); ok {
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: mlastIndex})
 		return
@@ -1779,6 +1850,13 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 	//
 	// See the other caller for findConflictByTerm (in stepLeader) for a much more
 	// detailed explanation of this mechanism.
+	// 我们的日志在索引m.Index处与Leader的日志不匹配。向Leader返回一个提示——
+	// 一个关于最大匹配的(index, term)的猜测。通过搜索跟随者的日志，找到最大的
+	// (index, term)对，其中term <= MsgApp的LogTerm，index <= MsgApp的Index。
+	// 这可以帮助跳过跟随者未提交的尾部中所有term大于MsgApp的LogTerm的索引。
+	//
+	// 有关findConflictByTerm的其他调用者（在stepLeader中）的更详细的解释，请参见
+	// 此机制。
 
 	// NB: m.Index >= raftLog.committed by now (see the early return above), and
 	// raftLog.lastIndex() >= raftLog.committed by invariant, so min of the two is
@@ -1786,7 +1864,15 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 	// the valid interval, which then will return a valid (index, term) pair with
 	// a non-zero term (unless the log is empty). However, it is safe to send a zero
 	// LogTerm in this response in any case, so we don't verify it here.
+	// 注意：m.Index >= raftLog.committed，raftLog.lastIndex() >= raftLog.committed，
+	// 所以两者的最小值也是 >= raftLog.committed。
+	// 因此，findConflictByTerm的参数在有效区间内，然后将返回一个有效的(index, term)对，
+	// 该对具有非零term（除非日志为空）。但是，在任何情况下，向此响应发送零LogTerm是安全的，
+	// 因此我们不在此处验证它。
+	// 取prevLogIndex和当前节点的commitIndex的最小值作为hintIndex
 	hintIndex := min(m.Index, r.raftLog.lastIndex())
+	// 通过hintIndex和m.LogTerm查找冲突的日志条目,获取最终的hintIndex和hintTerm
+	// 返回的是当前节点日志中小于等于m.LogTerm的最大的index
 	hintIndex, hintTerm := r.raftLog.findConflictByTerm(hintIndex, m.LogTerm)
 	r.send(pb.Message{
 		To:         m.From,
@@ -2028,9 +2114,12 @@ func (r *raft) abortLeaderTransfer() {
 }
 
 // committedEntryInCurrentTerm return true if the peer has committed an entry in its term.
+// 在当前任期内，如果节点已经提交了一个entry，则返回true。
 func (r *raft) committedEntryInCurrentTerm() bool {
 	// NB: r.Term is never 0 on a leader, so if zeroTermOnOutOfBounds returns 0,
 	// we won't see it as a match with r.Term.
+	// 注意：在领导者上，r.Term永远不会为0，因此如果zeroTermOnOutOfBounds返回0，
+	// 我们将不会将其视为与r.Term匹配。
 	return r.raftLog.zeroTermOnOutOfBounds(r.raftLog.term(r.raftLog.committed)) == r.Term
 }
 
@@ -2093,9 +2182,11 @@ func releasePendingReadIndexMessages(r *raft) {
 	if len(r.pendingReadIndexMessages) == 0 {
 		// Fast path for the common case to avoid a call to storage.LastIndex()
 		// via committedEntryInCurrentTerm.
+		// 避免通过committedEntryInCurrentTerm调用storage.LastIndex()的快速路径。
 		return
 	}
 	if !r.committedEntryInCurrentTerm() {
+		// 这意味该节点在当前任期内还没有提交任何entry，所以不会有任何读索引请求被处理。
 		r.logger.Error("pending MsgReadIndex should be released only after first commit in current term")
 		return
 	}

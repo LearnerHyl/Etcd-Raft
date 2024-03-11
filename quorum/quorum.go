@@ -31,6 +31,7 @@ func (i Index) String() string {
 
 // AckedIndexer allows looking up a commit index for a given ID of a voter
 // from a corresponding MajorityConfig.
+// AckedIndexer允许从相应的MajorityConfig中查找给定ID的投票者的提交索引。
 type AckedIndexer interface {
 	AckedIndex(voterID uint64) (idx Index, found bool)
 }

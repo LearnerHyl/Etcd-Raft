@@ -30,6 +30,12 @@ import pb "go.etcd.io/raft/v3/raftpb"
 // Note that unstable.offset may be less than the highest log
 // position in storage; this means that the next write to storage
 // might need to truncate the log before persisting unstable.entries.
+// unstable包含尚未写入存储的“不稳定”日志条目和快照状态。该类型有两个作用。
+// 首先，它保存新的日志条目和可选快照，直到它们被交给Ready结构进行持久化。
+// 其次，它在将状态交给raftLog后继续保存这种状态，以便提供raftLog对正在进行的日志条目和快照的视图，
+// 直到它们的写入被稳定下来，并且可以保证在存储的查询中反映。在此之后，相应的日志条目和/或快照可以从不稳定中清除。
+// unstable.entries[i]具有raft日志位置i+unstable.offset。请注意，unstable.offset可能小于存储中的最高日志位置；
+// 这意味着下一次写入存储可能需要在持久化unstable.entries之前截断日志。
 type unstable struct {
 	// the incoming unstable snapshot, if any.
 	snapshot *pb.Snapshot
@@ -44,6 +50,7 @@ type unstable struct {
 	// Like offset, offsetInProgress is exclusive, meaning that it
 	// contains the index following the largest in-progress entry.
 	// Invariant: offset <= offsetInProgress
+	// entries[:offsetInProgress-offset]正在写入存储。
 	offsetInProgress uint64
 
 	logger Logger
@@ -93,6 +100,7 @@ func (u *unstable) maybeTerm(i uint64) (uint64, bool) {
 
 // nextEntries returns the unstable entries that are not already in the process
 // of being written to storage.
+// nextEntries返回尚未写入存储的不稳定条目
 func (u *unstable) nextEntries() []pb.Entry {
 	inProgress := int(u.offsetInProgress - u.offset)
 	if len(u.entries) == inProgress {
@@ -115,6 +123,9 @@ func (u *unstable) nextSnapshot() *pb.Snapshot {
 // will no longer be returned from nextEntries/nextSnapshot. However, new
 // entries/snapshots added after a call to acceptInProgress will be returned
 // from those methods, until the next call to acceptInProgress.
+// acceptInProgress标记不稳定的所有条目和快照（如果有）已经开始写入存储的过程。
+// 条目/快照将不再从nextEntries/nextSnapshot返回。但是，在调用acceptInProgress之后添加的新条目/快照将从这些方法返回，
+// 直到下一次调用acceptInProgress。
 func (u *unstable) acceptInProgress() {
 	if len(u.entries) > 0 {
 		// NOTE: +1 because offsetInProgress is exclusive, like offset.
@@ -131,6 +142,8 @@ func (u *unstable) acceptInProgress() {
 // The method should only be called when the caller can attest that the entries
 // can not be overwritten by an in-progress log append. See the related comment
 // in newStorageAppendRespMsg.
+// stableTo标记条目直到具有指定（index，term）的条目为成功写入稳定存储。
+// 仅当调用者可以证明条目不会被正在进行的日志附加覆盖时，才应调用该方法。请参见newStorageAppendRespMsg中的相关注释。
 func (u *unstable) stableTo(id entryID) {
 	gt, ok := u.maybeTerm(id.index)
 	if !ok {
@@ -163,6 +176,8 @@ func (u *unstable) stableTo(id entryID) {
 // if most of it isn't being used. This avoids holding references to a bunch of
 // potentially large entries that aren't needed anymore. Simply clearing the
 // entries wouldn't be safe because clients might still be using them.
+// 如果大部分数组空间没有被使用，shrinkEntriesArray丢弃该条目切片使用的底层数组。这样可以避免保留对一堆可能不再需要的大条目的引用。
+// 简单地清除条目是不安全的，因为客户端可能仍在使用它们。
 func (u *unstable) shrinkEntriesArray() {
 	// We replace the array if we're using less than half of the space in
 	// it. This number is fairly arbitrary, chosen as an attempt to balance
@@ -185,6 +200,7 @@ func (u *unstable) stableSnapTo(i uint64) {
 	}
 }
 
+// restore restores the unstable from a snapshot.
 func (u *unstable) restore(s pb.Snapshot) {
 	u.offset = s.Metadata.Index + 1
 	u.offsetInProgress = u.offset
@@ -193,6 +209,7 @@ func (u *unstable) restore(s pb.Snapshot) {
 	u.snapshotInProgress = false
 }
 
+// truncateAndAppend trims the unstable's entries to a prefix of the given index
 func (u *unstable) truncateAndAppend(ents []pb.Entry) {
 	fromIndex := ents[0].Index
 	switch {
@@ -230,6 +247,9 @@ func (u *unstable) slice(lo uint64, hi uint64) []pb.Entry {
 	// NB: use the full slice expression to limit what the caller can do with the
 	// returned slice. For example, an append will reallocate and copy this slice
 	// instead of corrupting the neighbouring u.entries.
+	// 注意：使用完整的切片表达式来限制调用者对返回切片的操作。
+	// 例如，追加操作将重新分配空间并复制此切片，而不是破坏相邻的u.entries。
+	// 再解释的详细一点：返回的切片是u.entries的一个子切片，但是返回的切片是一个新的切片，不会影响u.entries的内容。
 	return u.entries[lo-u.offset : hi-u.offset : hi-u.offset]
 }
 

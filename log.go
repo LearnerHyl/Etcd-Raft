@@ -319,6 +319,7 @@ func (l *raftLog) hasNextUnstableSnapshot() bool {
 
 // hasNextOrInProgressSnapshot returns if there is pending snapshot waiting for
 // applying or in the process of being applied.
+// hasNextOrInProgressSnapshot返回是否有待应用的快照或正在应用过程中。
 func (l *raftLog) hasNextOrInProgressSnapshot() bool {
 	return l.unstable.snapshot != nil
 }

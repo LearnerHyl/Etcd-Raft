@@ -1021,6 +1021,7 @@ func (r *raft) campaign(t CampaignType) {
 	if !r.promotable() {
 		// This path should not be hit (callers are supposed to check), but
 		// better safe than sorry.
+		// 不应该走到这个路径（调用者应该检查），但是小心总比后悔好。
 		r.logger.Warningf("%x is unpromotable; campaign() should have been called", r.id)
 	}
 	var term uint64
@@ -1029,6 +1030,7 @@ func (r *raft) campaign(t CampaignType) {
 		r.becomePreCandidate()
 		voteMsg = pb.MsgPreVote
 		// PreVote RPCs are sent for the next term before we've incremented r.Term.
+		// PreVote类型的RPC在我们增加r.Term之前发送给下一个term。
 		term = r.Term + 1
 	} else {
 		r.becomeCandidate()
@@ -1042,15 +1044,18 @@ func (r *raft) campaign(t CampaignType) {
 		for id := range idMap {
 			ids = append(ids, id)
 		}
+		// 将当前具有投票权的节点的id按照从小到大的顺序排列
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	}
 	for _, id := range ids {
-		if id == r.id {
+		if id == r.id { // 给自己投票
 			// The candidate votes for itself and should account for this self
 			// vote once the vote has been durably persisted (since it doesn't
 			// send a MsgVote to itself). This response message will be added to
 			// msgsAfterAppend and delivered back to this node after the vote
 			// has been written to stable storage.
+			// 候选人为自己投票，并且一旦投票被持久化，就应该考虑这个自我投票（因为它不会向自己发送MsgVote）。
+			// 这个响应消息将被添加到msgsAfterAppend，并在投票被写入稳定存储后传递回这个节点。
 			r.send(pb.Message{To: id, Term: term, Type: voteRespMsgType(voteMsg)})
 			continue
 		}
@@ -1074,6 +1079,7 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int, rejected 
 		r.logger.Infof("%x received %s rejection from %x at term %d", r.id, t, id, r.Term)
 	}
 	r.trk.RecordVote(id, v)
+	// 计算当前投票汇总是否到达了大多数
 	return r.trk.TallyVotes()
 }
 
@@ -1766,10 +1772,13 @@ func stepLeader(r *raft, m pb.Message) error {
 
 // stepCandidate is shared by StateCandidate and StatePreCandidate; the difference is
 // whether they respond to MsgVoteResp or MsgPreVoteResp.
+// stepCandidate由StateCandidate和StatePreCandidate共享；它们的区别在于它们是响应MsgVoteResp还是MsgPreVoteResp。
 func stepCandidate(r *raft, m pb.Message) error {
 	// Only handle vote responses corresponding to our candidacy (while in
 	// StateCandidate, we may get stale MsgPreVoteResp messages in this term from
 	// our pre-candidate state).
+	// 只处理与我们的候选资格相对应的投票响应（在StateCandidate状态下，在这个任期中，我们可能会从我们的PreCandidate状态中
+	// 得到过时的MsgPreVoteResp消息）。
 	var myVoteRespType pb.MessageType
 	if r.state == StatePreCandidate {
 		myVoteRespType = pb.MsgPreVoteResp
@@ -1790,6 +1799,7 @@ func stepCandidate(r *raft, m pb.Message) error {
 		r.becomeFollower(m.Term, m.From) // always m.Term == r.Term
 		r.handleSnapshot(m)
 	case myVoteRespType:
+		// 计算当前集群中具有投票权的节点有多少个，以及有多少个拒绝了投票
 		gr, rj, res := r.poll(m.From, m.Type, !m.Reject)
 		r.logger.Infof("%x has received %d %s votes and %d vote rejections", r.id, gr, m.Type, rj)
 		switch res {
@@ -1803,9 +1813,12 @@ func stepCandidate(r *raft, m pb.Message) error {
 		case quorum.VoteLost:
 			// pb.MsgPreVoteResp contains future term of pre-candidate
 			// m.Term > r.Term; reuse r.Term
+			// pb.MsgPreVoteResp包含了PreCandidate的未来任期m.Term > r.Term；重用r.Term
 			r.becomeFollower(r.Term, None)
 		}
 	case pb.MsgTimeoutNow:
+		// candidate不能成为Leader Transfer操作的对象，因为他已经在选举过程中了，TimeoutNow消息会让其马上再次发起选举，
+		// 这明显是不合理的
 		r.logger.Debugf("%x [term %d state %v] ignored MsgTimeoutNow from %x", r.id, r.Term, r.state, m.From)
 	}
 	return nil
@@ -2059,6 +2072,7 @@ func (r *raft) restore(s pb.Snapshot) bool {
 
 // promotable indicates whether state machine can be promoted to leader,
 // which is true when its own id is in progress list.
+// promotable表示状态机是否可以晋升为领导者，当自己的id在进度列表中时为true。
 func (r *raft) promotable() bool {
 	pr := r.trk.Progress[r.id]
 	return pr != nil && !pr.IsLearner && !r.raftLog.hasNextOrInProgressSnapshot()

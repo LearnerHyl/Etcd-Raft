@@ -182,11 +182,14 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 // a result indicating whether the vote is pending (i.e. neither a quorum of
 // yes/no has been reached), won (a quorum of yes has been reached), or lost (a
 // quorum of no has been reached).
+// VoteResult接受一个投票者到yes/no（true/false）投票的映射，并返回一个结果，指示投票是挂起（yes或no都没有到达多数派）,
+// 赢得（已经达到yes的多数派）或丢失（已经达到no的多数派）。
 func (c MajorityConfig) VoteResult(votes map[uint64]bool) VoteResult {
 	if len(c) == 0 {
 		// By convention, the elections on an empty config win. This comes in
 		// handy with joint quorums because it'll make a half-populated joint
 		// quorum behave like a majority quorum.
+		// 按照惯例，空配置的选举会赢。这在联合多数中很有用，因为它会使半填充的联合多数表现得像多数多数。
 		return VoteWon
 	}
 
@@ -202,12 +205,12 @@ func (c MajorityConfig) VoteResult(votes map[uint64]bool) VoteResult {
 			votedCnt++
 		}
 	}
-
+	// 首先要理解：votedCnt + missing + noVotedCnt = len(c)
 	q := len(c)/2 + 1
-	if votedCnt >= q {
+	if votedCnt >= q { // yes已经达到多数派
 		return VoteWon
 	}
-	if votedCnt+missing >= q {
+	if votedCnt+missing >= q { // yes和no都没有到达多数派
 		return VotePending
 	}
 	return VoteLost

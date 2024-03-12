@@ -29,6 +29,7 @@ func (c JointConfig) String() string {
 
 // IDs returns a newly initialized map representing the set of voters present
 // in the joint configuration.
+// IDs 返回一个新初始化的map，表示联合配置中存在的投票者集合。
 func (c JointConfig) IDs() map[uint64]struct{} {
 	m := map[uint64]struct{}{}
 	for _, cc := range c {
@@ -63,6 +64,8 @@ func (c JointConfig) CommittedIndex(l AckedIndexer) Index {
 // VoteResult takes a mapping of voters to yes/no (true/false) votes and returns
 // a result indicating whether the vote is pending, lost, or won. A joint quorum
 // requires both majority quorums to vote in favor.
+// VoteResult接受一个投票者到yes/no（true/false）投票的映射，并返回一个结果，指示投票是挂起、丢失还是赢得。
+// joint consensus quorum需要两个多数的赞成票。
 func (c JointConfig) VoteResult(votes map[uint64]bool) VoteResult {
 	r1 := c[0].VoteResult(votes)
 	r2 := c[1].VoteResult(votes)

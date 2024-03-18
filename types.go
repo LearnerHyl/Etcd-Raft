@@ -21,10 +21,13 @@ import (
 )
 
 // entryID uniquely identifies a raft log entry.
+// entryID 唯一的标识了一个raft日志条目
 //
 // Every entry is associated with a leadership term which issued this entry and
 // initially appended it to the log. There can only be one leader at any term,
 // and a leader never issues two entries with the same index.
+// 每个entry都与一个领导者任期相关联，在该任期中，此任期的领导者第一次将其附加到日志中。
+// 在任何任期中，只能有一个领导者，并且领导者永远不会发出两个具有相同索引的条目。
 type entryID struct {
 	term  uint64
 	index uint64

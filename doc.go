@@ -15,6 +15,7 @@
 /*
 Package raft sends and receives messages in the Protocol Buffer format
 defined in the raftpb package.
+raft包使用raftpb包中定义的Protocol Buffer格式发送和接收消息。
 
 Raft is a protocol with which a cluster of nodes can maintain a replicated state machine.
 The state machine is kept in sync through the use of a replicated log.
@@ -386,6 +387,9 @@ raft库使用Protocol Buffer格式发送和接收消息（在raftpb包中定义�
 	'bcastAppend' method, which then calls 'sendAppend' method to each
 	follower. In 'sendAppend', if a leader fails to get term or entries,
 	the leader requests snapshot by sending 'MsgSnap' type message.
+	`MsgSnap`请求安装快照消息。当节点刚刚成为领导者或领导者收到`MsgProp`消息时，它调用`bcastAppend`方法，
+	然后调用`sendAppend`方法到每个follower。在`sendAppend`中，如果领导者未能获取term或条目，
+	领导者将通过发送`MsgSnap`类型消息来请求快照。
 
 	'MsgSnapStatus' tells the result of snapshot install message. When a
 	follower rejected 'MsgSnap', it indicates the snapshot request with
@@ -394,6 +398,10 @@ raft库使用Protocol Buffer格式发送和接收消息（在raftpb包中定义�
 	follower's progress as probe. When 'MsgSnap' were not rejected, it
 	indicates that the snapshot succeeded and the leader sets follower's
 	progress to probe and resumes its log replication.
+	`MsgSnapStatus`告诉快照安装消息的结果。当follower拒绝`MsgSnap`时，它表示
+	`MsgSnap`的快照请求由于网络问题而失败，这导致网络层无法将快照发送给其followers。
+	然后leader将该follower的状态视作为StateProbe(此时应该没有实际set该follower的state为StateProbe)。
+	当`MsgSnap`没有被拒绝时，它表示快照成功，leader将follower的状态设置为StateProbe，并恢复其日志复制。
 
 	'MsgHeartbeat' sends heartbeat from leader. When 'MsgHeartbeat' is passed
 	to candidate and message's term is higher than candidate's, the candidate
@@ -402,17 +410,27 @@ raft库使用Protocol Buffer格式发送和接收消息（在raftpb包中定义�
 	'MsgHeartbeat' is passed to follower's Step method and message's term is
 	higher than follower's, the follower updates its leaderID with the ID
 	from the message.
+	`MsgHeartbeat`从leader发送心跳。当`MsgHeartbeat`传递给候选人并且消息的term高于候选人的term时，
+	候选人将恢复为follower，并从此心跳中更新其commitIndex。然后将消息发送到其邮箱(raft.msgs)。
+	当`MsgHeartbeat`传递给follower的Step方法并且消息的term高于follower的term时，follower将其leaderID更新为消息中的ID。
+
 
 	'MsgHeartbeatResp' is a response to 'MsgHeartbeat'. When 'MsgHeartbeatResp'
 	is passed to leader's Step method, the leader knows which follower
 	responded. And only when the leader's last committed index is greater than
 	follower's Match index, the leader runs 'sendAppend` method.
+	`MsgHeartbeatResp`是对`MsgHeartbeat`的响应。当`MsgHeartbeatResp`传递给leader的Step方法时，
+	leader知道哪个follower做出了响应。只有当leader的最后提交的索引大于follower的Match索引时，
+	leader才运行`sendAppend`方法。
 
 	'MsgUnreachable' tells that request(message) wasn't delivered. When
 	'MsgUnreachable' is passed to leader's Step method, the leader discovers
 	that the follower that sent this 'MsgUnreachable' is not reachable, often
 	indicating 'MsgApp' is lost. When follower's progress state is replicate,
 	the leader sets it back to probe.
+	`MsgUnreachable`表示请求（消息）未被传递。当`MsgUnreachable`传递给leader的Step方法时，
+	leader发现发送此`MsgUnreachable`的follower不可达，通常表示`MsgApp`丢失。
+	当follower的progress状态为replicate时，leader将其设置回probe。
 
 	'MsgStorageAppend' is a message from a node to its local append storage
 	thread to write entries, hard state, and/or a snapshot to stable storage.

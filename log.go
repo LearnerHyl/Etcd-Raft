@@ -241,6 +241,7 @@ func (l *raftLog) hasNextUnstableEnts() bool {
 // hasNextOrInProgressUnstableEnts returns if there are any entries that are
 // available to be written to the local stable log or in the process of being
 // written to the local stable log.
+// hasNextOrInProgressUnstableEnts返回是否有任何条目可写入本地稳定日志或正在写入本地稳定日志的过程中。
 func (l *raftLog) hasNextOrInProgressUnstableEnts() bool {
 	return len(l.unstable.entries) > 0
 }

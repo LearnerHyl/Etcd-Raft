@@ -33,6 +33,8 @@ type readIndexStatus struct {
 	// instead of a map[uint64]struct{} due to the API of quorum.VoteResult. If
 	// this becomes performance sensitive enough (doubtful), quorum.VoteResult
 	// can change to an API that is closer to that of CommittedIndex.
+	// NB: 这里永远不会记录'false'，但是由于quorum.VoteResult的API，使用map[uint64]struct{}比较方便。
+	// 如果这变得足够重要（不太可能），quorum.VoteResult可以更改为接近CommittedIndex的API。
 	acks map[uint64]bool
 }
 

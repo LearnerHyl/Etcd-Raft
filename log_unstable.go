@@ -201,6 +201,7 @@ func (u *unstable) stableSnapTo(i uint64) {
 }
 
 // restore restores the unstable from a snapshot.
+// 从快照中恢复unstable
 func (u *unstable) restore(s pb.Snapshot) {
 	u.offset = s.Metadata.Index + 1
 	u.offsetInProgress = u.offset

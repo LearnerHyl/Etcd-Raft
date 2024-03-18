@@ -78,6 +78,7 @@ type Ready struct {
 
 	// Entries specifies entries to be saved to stable storage BEFORE
 	// Messages are sent.
+	// Entries指定在发送消息之前保存到稳定存储中的条目。
 	//
 	// If async storage writes are enabled, this field does not need to be acted
 	// on immediately. It will be reflected in a MsgStorageAppend message in the
@@ -120,6 +121,7 @@ type Ready struct {
 	// Messages指定该节点需要发送的消息。
 	// 如果未启用async storage writes，则这些消息必须在Entries附加到稳定存储之后发送。
 	// 如果启用了async storage writes，则这些消息可以立即发送，因为当消息MsgStorage{Append,Apply}附加到Messages中时，则意味着该异步写入已完成。
+	// 如果启用async storage writes，则这些消息可以立即发送，因为具有异步写入完成作为前提条件的消息，这些消息将会被封装到单独的MsgStorage{Append,Apply}消息中。
 	Messages []pb.Message
 
 	// MustSync indicates whether the HardState and Entries must be durably
@@ -246,12 +248,15 @@ type Node interface {
 	// This does nothing with ReadOnlyLeaseBased, since it would allow a new
 	// leader to be elected without the old leader knowing.
 	// ForgetLeader忘记跟随者的当前领导者，将其更改为None。它在当前任期中仍然是一个无领导的跟随者，不会进行竞选。
+	//
 	// 这在PreVote+CheckQuorum中很有用，因为通常情况下，如果跟随者在过去的选举超时间隔内听到过领导者的消息，它们通常不会授予pre-votes给候选人。
 	// 无领导的跟随者可以立即授予pre-votes，因此如果大多数跟随者有充分的理由相信领导者已经死亡（例如通过side-channel或外部故障检测器），并且忘记了它，那么它们可以立即选举新的领导者，而不必等待选举超时。
 	// 如果它们再次听到领导者的消息，它们将恢复为正常的跟随者，或者在选举超时时转换为候选人。
+	//
 	// 例如，考虑一个三节点集群，其中1是领导者，2+3刚刚收到了来自1的心跳。如果2和3相信领导者现在已经死亡（也许它们知道编排系统关闭了1的VM），我们可以指示2忘记领导者，3进行竞选。
 	// 然后2将能够授予3的pre-vote，并立即选举3为领导者（通常情况下，2会拒绝投票，直到选举超时结束，因为它最近听到了领导者的消息）。
 	// 但是，3不能单方面进行竞选，必须有大多数节点同意领导者已经死亡，这样可以避免在个别节点错误地认为领导者已经死亡时干扰领导者。
+	//
 	// 这在ReadOnlyLeaseBased中无效，因为它会允许新的领导者在旧的领导者不知道的情况下被选举。
 	ForgetLeader(ctx context.Context) error
 
@@ -261,7 +266,10 @@ type Node interface {
 	// processed safely. The read state will have the same rctx attached.
 	// Note that request can be lost without notice, therefore it is user's job
 	// to ensure read index retries.
-	// ReadIndex请求一个read state。read state将设置在ready中。read state具有一个read index。一旦应用程序进度超过read index，那么在发出read请求之前的任何线性读请求都可以安全地处理。read state将附加相同的rctx。
+	//
+	// ReadIndex请求一个read state。read state将设置在ready中。read state具有一个read index。
+	// 一旦应用程序进度超过read index，那么在发出read请求之前的任何线性读请求都可以安全地处理。
+	// read state将附加相同的rctx。
 	// 请注意，请求可能会在没有通知的情况下丢失，因此用户需要确保read index重试。
 	ReadIndex(ctx context.Context, rctx []byte) error
 

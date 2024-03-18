@@ -360,25 +360,35 @@ type raft struct {
 
 	// msgs contains the list of messages that should be sent out immediately to
 	// other nodes.
+	// msgs 包含应立即发送到其他节点的消息列表。
 	//
 	// Messages in this list must target other nodes.
+	// 此列表中的消息必须针对其他节点。
 	msgs []pb.Message
 	// msgsAfterAppend contains the list of messages that should be sent after
 	// the accumulated unstable state (e.g. term, vote, []entry, and snapshot)
 	// has been persisted to durable storage. This includes waiting for any
 	// unstable state that is already in the process of being persisted (i.e.
 	// has already been handed out in a prior Ready struct) to complete.
+	// msgsAfterAppend 包含了一系列消息，当累积的不稳定状态（例如term、vote、[]entry和snapshot）已
+	// 经被持久化到持久存储后，这些消息应该被发送。
+	// 这包括等待任何处于被持久化过程中的unstable state（即已在先前的Ready结构中分发）完成持久化操作，
+	// 之后发送这些消息标记着已经完成持久化操作。
 	//
 	// Messages in this list may target other nodes or may target this node.
+	// 此列表中的消息可能针对其他节点，也可能针对此节点。
 	//
 	// Messages in this list have the type MsgAppResp, MsgVoteResp, or
 	// MsgPreVoteResp. See the comment in raft.send for details.
+	// 此列表中的消息类型为MsgAppResp、MsgVoteResp或MsgPreVoteResp。有关详细信息，请参见raft.send中的注释。
 	msgsAfterAppend []pb.Message
 
 	// the leader id
 	lead uint64
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in raft thesis 3.10.
+	// 当其值不为零时，leadTransferee是领导者转移目标的id。
+	// 遵循raft论文3.10中定义的过程。
 	leadTransferee uint64
 	// Only one conf change may be pending (in the log, but not yet
 	// applied) at a time. This is enforced via pendingConfIndex, which
@@ -392,12 +402,15 @@ type raft struct {
 	pendingConfIndex uint64
 	// disableConfChangeValidation is Config.DisableConfChangeValidation,
 	// see there for details.
+	// disableConfChangeValidation是Config.DisableConfChangeValidation，有关详细信息，请参见那里。
 	disableConfChangeValidation bool
 	// an estimate of the size of the uncommitted tail of the Raft log. Used to
 	// prevent unbounded log growth. Only maintained by the leader. Reset on
 	// term changes.
+	// Raft日志未提交尾部大小的估计。用于防止无限制的日志增长。仅由leader维护。在term更改时重置。
 	uncommittedSize entryPayloadSize
 
+	// readOnly用于处理只读请求。
 	readOnly *readOnly
 
 	// number of ticks since it reached last electionTimeout when it is leader
@@ -433,6 +446,9 @@ type raft struct {
 	// that can't be answered as new leader didn't committed any log in
 	// current term. Those will be handled as fast as first log is committed in
 	// current term.
+	// pendingReadIndexMessages用于存储MsgReadIndex类型的消息，
+	// 因为新领导者在当前任期中没有提交任何日志，所以无法回答这些消息。
+	// 这些消息将在当前任期中提交第一条日志时尽快处理。
 	pendingReadIndexMessages []pb.Message
 }
 
@@ -508,6 +524,7 @@ func (r *raft) hardState() pb.HardState {
 
 // send schedules persisting state to a stable storage and AFTER that
 // sending the message (as part of next Ready message processing).
+// send调度将状态持久化到稳定存储，并在此之后发送消息（作为下一个Ready消息处理的一部分）。
 func (r *raft) send(m pb.Message) {
 	if m.From == None {
 		m.From = r.id
@@ -662,21 +679,27 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 
 // maybeSendSnapshot fetches a snapshot from Storage, and sends it to the given
 // node. Returns true iff the snapshot message has been emitted successfully.
+// maybeSendSnapshot从Storage中获取快照，并将其发送到给定的节点。如果成功发送了快照消息，则返回true。
 func (r *raft) maybeSendSnapshot(to uint64, pr *tracker.Progress) bool {
 	if !pr.RecentActive {
+		// 目标follower不是最近活跃的，不发送快照
 		r.logger.Debugf("ignore sending snapshot to %x since it is not recently active", to)
 		return false
 	}
 
 	snapshot, err := r.raftLog.snapshot()
 	if err != nil {
+		// 快照暂时不可用，需要等待或者重试
 		if err == ErrSnapshotTemporarilyUnavailable {
 			r.logger.Debugf("%x failed to send snapshot to %x because snapshot is temporarily unavailable", r.id, to)
 			return false
 		}
+		// 若获取快照失败，且err != ErrSnapshotTemporarilyUnavailable，则直接panic
+		// TODO:什么情况下会出现这种情况？
 		panic(err) // TODO(bdarnell)
 	}
 	if IsEmptySnap(snapshot) {
+		// 若快照为空，则直接panic
 		panic("need non-empty snapshot")
 	}
 	sindex, sterm := snapshot.Metadata.Index, snapshot.Metadata.Term
@@ -697,6 +720,9 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	// or it might not have all the committed entries.
 	// The leader MUST NOT forward the follower's commit to
 	// an unmatched index.
+	// 将commit作为min(to.matched, r.committed)附加。
+	// 当leader发送心跳消息时，接收者（follower）可能与leader不匹配，或者可能没有所有已提交的条目。
+	// leader禁止发送大于follower的matchIndex的commitIndex
 	commit := min(r.trk.Progress[to].Match, r.raftLog.committed)
 	m := pb.Message{
 		To:      to,
@@ -1683,19 +1709,26 @@ func stepLeader(r *raft, m pb.Message) error {
 		// empty append, allowing it to recover from situations in which all the
 		// messages that filled up Inflights in the first place were dropped. Note
 		// also that the outgoing heartbeat already communicated the commit index.
+		// 注意：如果跟随者被暂停（Inflights已满），这仍然会发送一个空的append消息，
+		// 使其能够从最初填满Inflights的所有消息都被丢弃的情况中恢复。注意，出站心跳已经传达了提交索引。
 		//
 		// If the follower is fully caught up but also in StateProbe (as can happen
 		// if ReportUnreachable was called), we also want to send an append (it will
 		// be empty) to allow the follower to transition back to StateReplicate once
 		// it responds.
+		// 如果跟随者已经完全赶上，但也处于StateProbe状态（如果调用了ReportUnreachable，可能会发生这种情况），
+		// 我们还想发送一个append（它将是空的），以便让跟随者在响应后转换回StateReplicate状态。
 		//
 		// Note that StateSnapshot typically satisfies pr.Match < lastIndex, but
 		// `pr.Paused()` is always true for StateSnapshot, so sendAppend is a
 		// no-op.
+		// 请注意，StateSnapshot通常满足pr.Match < lastIndex，但是`pr.Paused()`对于StateSnapshot始终为true，
+		// 因此sendAppend是一个空操作。
 		if pr.Match < r.raftLog.lastIndex() || pr.State == tracker.StateProbe {
 			r.sendAppend(m.From)
 		}
 
+		// TODO:下面都是处理ReadIndex优化的逻辑，目前还看不懂
 		if r.readOnly.option != ReadOnlySafe || len(m.Context) == 0 {
 			return nil
 		}
@@ -1711,26 +1744,33 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgSnapStatus:
+		// 若当前peer的state不为StateSnapshot，说明是过期的消息，直接返回
 		if pr.State != tracker.StateSnapshot {
 			return nil
 		}
-		if !m.Reject {
+		if !m.Reject { // 快照应用成功，切换该peer的状态为StateProbe
 			pr.BecomeProbe()
 			r.logger.Debugf("%x snapshot succeeded, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
 		} else {
 			// NB: the order here matters or we'll be probing erroneously from
 			// the snapshot index, but the snapshot never applied.
+			// 注意：这里的顺序很重要，否则我们将从快照索引处开始错误地进行探测，但是快照从未应用。
+			// 所以要先把pr.PendingSnapshot置为0，然后再调用BecomeProbe，启动探测状态
 			pr.PendingSnapshot = 0
 			pr.BecomeProbe()
 			r.logger.Debugf("%x snapshot failed, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
 		}
 		// If snapshot finish, wait for the MsgAppResp from the remote node before sending
 		// out the next MsgApp.
+		// 如果快照完成，等待远程节点的MsgAppResp，然后再发送下一个MsgApp。
 		// If snapshot failure, wait for a heartbeat interval before next try
+		// 如果快照失败，等待一个心跳间隔，然后再尝试
 		pr.MsgAppFlowPaused = true
 	case pb.MsgUnreachable:
 		// During optimistic replication, if the remote becomes unreachable,
 		// there is huge probability that a MsgApp is lost.
+		// 在乐观复制期间，如果远程节点变得不可达，那么MsgApp很可能丢失。
+		// 由上层RawNode发送MsgUnreachable消息，说明远程节点不可达
 		if pr.State == tracker.StateReplicate {
 			pr.BecomeProbe()
 		}
@@ -1968,6 +2008,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 func (r *raft) handleSnapshot(m pb.Message) {
 	// MsgSnap messages should always carry a non-nil Snapshot, but err on the
 	// side of safety and treat a nil Snapshot as a zero-valued Snapshot.
+	// MsgSnap 消息应该总是携带一个非nil的Snapshot，但是为了安全起见，将nil的Snapshot视为零值的Snapshot。
 	var s pb.Snapshot
 	if m.Snapshot != nil {
 		s = *m.Snapshot
@@ -1987,7 +2028,9 @@ func (r *raft) handleSnapshot(m pb.Message) {
 // restore recovers the state machine from a snapshot. It restores the log and the
 // configuration of state machine. If this method returns false, the snapshot was
 // ignored, either because it was obsolete or because of an error.
+// restore从快照中恢复状态机。它恢复日志和状态机的配置。如果此方法返回false，则快照被忽略，
 func (r *raft) restore(s pb.Snapshot) bool {
+	// 若快照的索引小于当前节点的commitIndex，则说明快照已经过期，不会接受快照。
 	if s.Metadata.Index <= r.raftLog.committed {
 		return false
 	}
@@ -1996,9 +2039,12 @@ func (r *raft) restore(s pb.Snapshot) bool {
 		// snapshot, it could move into a new term without moving into a
 		// follower state. This should never fire, but if it did, we'd have
 		// prevented damage by returning early, so log only a loud warning.
-		//
+		// 这是深度防御：如果领导者以某种方式应用了快照，它可能会在不进入follower状态的情况下进入新任期。
+		// 这应该永远不会触发，但如果确实发生了，我们通过提前返回来防止损害，所以只记录一个大声的警告。
+
 		// At the time of writing, the instance is guaranteed to be in follower
 		// state when this method is called.
+		// 在写入快照时，保证在调用此方法时实例处于follower状态。
 		r.logger.Warningf("%x attempted to restore snapshot as leader; should never happen", r.id)
 		r.becomeFollower(r.Term+1, None)
 		return false
@@ -2007,15 +2053,20 @@ func (r *raft) restore(s pb.Snapshot) bool {
 	// More defense-in-depth: throw away snapshot if recipient is not in the
 	// config. This shouldn't ever happen (at the time of writing) but lots of
 	// code here and there assumes that r.id is in the progress tracker.
+	// 更深层次的防御：如果接收者不在配置中，则丢弃快照。这不应该发生（在写入时），
 	found := false
 	cs := s.Metadata.ConfState
 
+	// 这个for循环的目的是检查当前节点是否在快照的ConfState中
+	// 依次检查了Voters、Learners、VotersOutgoing三个集合
+	// 这里的写法是将Voters、Learners、VotersOutgoing三个集合合并到一个数组中，然后遍历这个数组
 	for _, set := range [][]uint64{
 		cs.Voters,
 		cs.Learners,
 		cs.VotersOutgoing,
 		// `LearnersNext` doesn't need to be checked. According to the rules, if a peer in
 		// `LearnersNext`, it has to be in `VotersOutgoing`.
+		// 不需要检查`LearnersNext`。根据规则，如果一个raft peer在`LearnersNext`中，它必须在`VotersOutgoing`中。
 	} {
 		for _, id := range set {
 			if id == r.id {
@@ -2038,18 +2089,23 @@ func (r *raft) restore(s pb.Snapshot) bool {
 	// Now go ahead and actually restore.
 
 	id := entryID{term: s.Metadata.Term, index: s.Metadata.Index}
-	if r.raftLog.matchTerm(id) {
+	if r.raftLog.matchTerm(id) { // 若当前节点的日志中已经存在了这个快照的索引和任期
 		// TODO(pav-kv): can print %+v of the id, but it will change the format.
 		last := r.raftLog.lastEntryID()
 		r.logger.Infof("%x [commit: %d, lastindex: %d, lastterm: %d] fast-forwarded commit to snapshot [index: %d, term: %d]",
 			r.id, r.raftLog.committed, last.index, last.term, id.index, id.term)
+		// 这种情况说明该raft peer中已经包含了快照携带的状态信息，所以不需要再次应用快照
+		// 但是需要将当前节点的commitIndex更新为快照的索引
 		r.raftLog.commitTo(s.Metadata.Index)
 		return false
 	}
 
+	// 说明当前节点的日志中没有快照的索引和任期，需要应用快照从而与Leader保持一致
+	// 这里相当于重置了当前节点的unstable状态
 	r.raftLog.restore(s)
 
 	// Reset the configuration and add the (potentially updated) peers in anew.
+	// 根据快照中携带的ConfState信息，重置当前节点的配置
 	r.trk = tracker.MakeProgressTracker(r.trk.MaxInflight, r.trk.MaxInflightBytes)
 	cfg, trk, err := confchange.Restore(confchange.Changer{
 		Tracker:   r.trk,
@@ -2059,9 +2115,11 @@ func (r *raft) restore(s pb.Snapshot) bool {
 	if err != nil {
 		// This should never happen. Either there's a bug in our config change
 		// handling or the client corrupted the conf change.
+		// 这不应该发生。要么是我们的配置更改处理中存在错误，要么是客户端损坏了配置更改。
 		panic(fmt.Sprintf("unable to restore config %+v: %s", cs, err))
 	}
 
+	// 确保当前节点更新后的配置与快照中携带的配置一致
 	assertConfStatesEquivalent(r.logger, cs, r.switchToConfig(cfg, trk))
 
 	last := r.raftLog.lastEntryID()

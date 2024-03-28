@@ -51,9 +51,12 @@ type VoteResult uint8
 const (
 	// VotePending indicates that the decision of the vote depends on future
 	// votes, i.e. neither "yes" or "no" has reached quorum yet.
+	// VotePending表示投票的决定取决于未来的投票，即目前还不能确定是否已经达到“是”或“否”的法定人数。
 	VotePending VoteResult = 1 + iota
 	// VoteLost indicates that the quorum has voted "no".
+	// VoteLost表示法定人数投票“否”。
 	VoteLost
 	// VoteWon indicates that the quorum has voted "yes".
+	// VoteWon表示法定人数投票“是”。
 	VoteWon
 )

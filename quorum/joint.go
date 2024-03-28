@@ -16,8 +16,11 @@ package quorum
 
 // JointConfig is a configuration of two groups of (possibly overlapping)
 // majority configurations. Decisions require the support of both majorities.
+//
 // JointConfig是两个Group（可能重叠）多数配置的配置。决策需要两个多数的支持。
-// 为了支持集群成员变更，Raft引入了JointConsensus机制，具体细节看论文。
+// 为了支持批量集群成员变更，Raft引入了JointConsensus机制。
+// 0：表示Cnew配置。
+// 1：表示Cold配置，若当前没有配置变更，则为空。
 type JointConfig [2]MajorityConfig
 
 func (c JointConfig) String() string {
@@ -42,6 +45,7 @@ func (c JointConfig) IDs() map[uint64]struct{} {
 
 // Describe returns a (multi-line) representation of the commit indexes for the
 // given lookuper.
+// Describe返回给定查找器的提交索引的多行表示。
 func (c JointConfig) Describe(l AckedIndexer) string {
 	return MajorityConfig(c.IDs()).Describe(l)
 }
@@ -72,12 +76,15 @@ func (c JointConfig) VoteResult(votes map[uint64]bool) VoteResult {
 
 	if r1 == r2 {
 		// If they agree, return the agreed state.
+		// 若二者一致，则返回一致的状态。无论是VotePending还是VoteWon，还是VoteLost。
 		return r1
 	}
 	if r1 == VoteLost || r2 == VoteLost {
 		// If either config has lost, loss is the only possible outcome.
+		// 如果有任何一个配置是VoteLost，则VoteLost是唯一可能的结果。
 		return VoteLost
 	}
 	// One side won, the other one is pending, so the whole outcome is.
+	// 一方赢了，另一方是挂起的，所以整个结果是挂起的。
 	return VotePending
 }

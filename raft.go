@@ -381,6 +381,7 @@ type raft struct {
 	// Messages in this list have the type MsgAppResp, MsgVoteResp, or
 	// MsgPreVoteResp. See the comment in raft.send for details.
 	// 此列表中的消息类型为MsgAppResp、MsgVoteResp或MsgPreVoteResp。有关详细信息，请参见raft.send中的注释。
+	// 里面存放的是Response类型消息，而这些消息大多数依赖于某些unstable state,只有当这些unstable state被持久化后才能发送
 	msgsAfterAppend []pb.Message
 
 	// the leader id
@@ -403,6 +404,7 @@ type raft struct {
 	// disableConfChangeValidation is Config.DisableConfChangeValidation,
 	// see there for details.
 	// disableConfChangeValidation是Config.DisableConfChangeValidation，有关详细信息，请参见那里。
+	// 配置更改验证是否被禁用，一般情况下是不会被禁用的
 	disableConfChangeValidation bool
 	// an estimate of the size of the uncommitted tail of the Raft log. Used to
 	// prevent unbounded log growth. Only maintained by the leader. Reset on
@@ -543,9 +545,16 @@ func (r *raft) send(m pb.Message) {
 			// - MsgPreVoteResp: m.Term is the term received in the original
 			//   MsgPreVote if the pre-vote was granted, non-zero for the
 			//   same reasons MsgPreVote is
+			// 所有{pre-,}campaign消息在发送时都需要设置term。
+			// - MsgVote：m.Term是节点正在竞选的任期，当竞选时我们会递增term，因此m.Term是非零的。
+			// - MsgVoteResp：如果MsgVote被授予，则m.Term是新的r.Term，由于MsgVote的原因，m.Term是非零的。
+			// - MsgPreVote：m.Term是节点将要竞选的任期，由于我们使用m.Term来指示我们将要竞选的下一个任期，因此m.Term是非零的。
+			// - MsgPreVoteResp：如果预投票被授予，则m.Term是从原始MsgPreVote消息中收到的任期，由于MsgPreVote的原因，m.Term是非零的。
 			r.logger.Panicf("term should be set when sending %s", m.Type)
 		}
 	} else {
+		// 因为我们在别的地方创建消息时是不会set term的，所以m.Term在这里时应该为0
+		// 除了MsgVote、MsgVoteResp、MsgPreVote、MsgPreVoteResp这四种消息，其他消息的term都应该为0
 		if m.Term != 0 {
 			r.logger.Panicf("term should not be set when sending %s (was %d)", m.Type, m.Term)
 		}
@@ -553,6 +562,12 @@ func (r *raft) send(m pb.Message) {
 		// proposals are a way to forward to the leader and
 		// should be treated as local message.
 		// MsgReadIndex is also forwarded to leader.
+		//
+		// 不要将term附加到MsgProp、MsgReadIndex提案上是一种转发到leader的方式，MsgProp
+		// 和MsgReadIndex应该被视为本地消息。MsgReadIndex也被转发到leader。
+		//
+		// 换言之，我们只为除了MsgProp和MsgReadIndex之外的消息设置term
+		// 因为MsgVote、MsgVoteResp、MsgPreVote、MsgPreVoteResp这四种消息是在别的地方创建的，所以它们的term是已经设置好的
 		if m.Type != pb.MsgProp && m.Type != pb.MsgReadIndex {
 			m.Term = r.Term
 		}
@@ -562,6 +577,8 @@ func (r *raft) send(m pb.Message) {
 		// are allowed to be sent out before unstable state (e.g. log entry
 		// writes and election votes) have been durably synced to the local
 		// disk.
+		// 如果启用了异步存储写入，则允许在不稳定状态（例如日志条目写入和选举投票）已经持久地同步到本地磁盘之前，
+		// 将消息添加到msgs切片中并发送出去。
 		//
 		// For most message types, this is not an issue. However, response
 		// messages that relate to "voting" on either leader election or log
@@ -570,8 +587,12 @@ func (r *raft) send(m pb.Message) {
 		// synced to stable storage locally. Similarly, it would be incorrect to
 		// acknowledge a log append to the leader before that entry has been
 		// synced to stable storage locally.
+		// 对于大多数消息类型，这不是问题。然而，与"voting"有关的响应消息，无论是领导者选举还是日志附加
+		// 都需要在发送之前进行持久化。在一轮选举中，发布投票之前必须将该投票结果同步到本地的稳定存储中。
+		// 类似地，在将日志附加确认发送给leader之前，必须将该条目同步到本地的稳定存储中。
 		//
 		// Per the Raft thesis, section 3.8 Persisted state and server restarts:
+		// 根据Raft论文第3.8节持久化状态和服务器重启：
 		//
 		// > Raft servers must persist enough information to stable storage to
 		// > survive server restarts safely. In particular, each server persists
@@ -581,6 +602,10 @@ func (r *raft) send(m pb.Message) {
 		// > persists new log entries before they are counted towards the entries’
 		// > commitment; this prevents committed entries from being lost or
 		// > “uncommitted” when servers restart
+		// > Raft服务器必须将足够的信息持久化到稳定存储中，以安全地在服务器重启时生存。
+		// > 特别是，每个服务器都会持久化其当前任期和投票；这是为了防止服务器在同一任期中投票两次
+		// > 或用被罢免的领导者的日志条目替换来自新领导者的日志条目。每个服务器还会在将新的日志条目
+		// > 计入条目的提交之前将其持久化；这可以防止在服务器重启时丢失或“未提交”已提交的条目。
 		//
 		// To enforce this durability requirement, these response messages are
 		// queued to be sent out as soon as the current collection of unstable
@@ -590,6 +615,9 @@ func (r *raft) send(m pb.Message) {
 		// waiting for the next Ready struct to begin being written to Storage.
 		// These messages must wait for all of this state to be durable before
 		// being published.
+		// 为了强制执行这种持久性要求，一旦当前的不稳定状态集合（响应消息所依赖的状态）已经持久化，
+		// 这些响应消息就会被排队发送。这种不稳定状态可能已经被传递给了一个正在持久化的Ready结构或者
+		// 可能正在等待下一个Ready结构开始被写入Storage。这些消息必须等待所有这些状态都持久化后才能发布。
 		//
 		// Rejected responses (m.Reject == true) present an interesting case
 		// where the durability requirement is less unambiguous. A rejection may
@@ -603,17 +631,25 @@ func (r *raft) send(m pb.Message) {
 		// because the safety of such behavior has not been formally verified,
 		// we err on the side of safety and omit a `&& !m.Reject` condition
 		// above.
+		// 被拒绝的响应（m.Reject == true）提出了一个有趣的情况，其中持久性要求不那么明确。
+		// 拒绝可能是基于不稳定状态的。例如，一个节点可能会拒绝对一个对等节点的投票，因为它已经开始同步
+		// 对另一个对等节点的投票。或者它可能会拒绝来自一个对等节点的投票请求，因为它有不稳定的日志条目，
+		// 这些日志条目表明该对等节点在日志上落后了。在这些情况下，立即发送拒绝响应似乎是安全的，而不会
+		// 在服务器重启时影响安全性。然而，由于这些拒绝情况很少见，并且因为这种行为的安全性尚未得到正式验证，
+		// 我们在安全性方面犯了错误，并省略了上面的`&& !m.Reject`条件。
 		r.msgsAfterAppend = append(r.msgsAfterAppend, m)
 	} else {
 		if m.To == r.id {
 			r.logger.Panicf("message should not be self-addressed when sending %s", m.Type)
 		}
+		// 非Response类型的消息，直接添加到msgs切片中，等待发送即可
 		r.msgs = append(r.msgs, m)
 	}
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer.
+// sendAppend向给定的peer发送带有新条目（如果有的话）和当前commitIndex的append RPC。
 func (r *raft) sendAppend(to uint64) {
 	r.maybeSendAppend(to, true)
 }
@@ -769,12 +805,15 @@ func (r *raft) appliedTo(index uint64, size entryEncodingSize) {
 	newApplied := max(index, oldApplied)
 	r.raftLog.appliedTo(newApplied, size)
 
+	// 若当前节点是Leader，且设置了AutoLeave选项，且新应用的索引大于等于r.pendingConfIndex
+	// raft节点的pendingConfIndex是在配置变更时设置的，当新应用的索引大于等于r.pendingConfIndex时，可以自动离开联合配置
 	if r.trk.Config.AutoLeave && newApplied >= r.pendingConfIndex && r.state == StateLeader {
 		// If the current (and most recent, at least for this leader's term)
 		// configuration should be auto-left, initiate that now. We use a
 		// nil Data which unmarshals into an empty ConfChangeV2 and has the
 		// benefit that appendEntry can never refuse it based on its size
 		// (which registers as zero).
+		//
 		m, err := confChangeToMsg(nil)
 		if err != nil {
 			panic(err)
@@ -847,6 +886,7 @@ func (r *raft) appendEntry(es ...pb.Entry) (accepted bool) {
 		es[i].Index = li + 1 + uint64(i)
 	}
 	// Track the size of this uncommitted proposal.
+	// 跟踪此未提交的提案的大小。
 	if !r.increaseUncommittedSize(es) {
 		r.logger.Warningf(
 			"%x appending new entries to log would exceed uncommitted entry size limit; dropping proposal",
@@ -856,12 +896,16 @@ func (r *raft) appendEntry(es ...pb.Entry) (accepted bool) {
 		return false
 	}
 	// use latest "last" index after truncate/append
+	// 在截断/附加后使用最新的“last”索引
 	li = r.raftLog.append(es...)
 	// The leader needs to self-ack the entries just appended once they have
 	// been durably persisted (since it doesn't send an MsgApp to itself). This
 	// response message will be added to msgsAfterAppend and delivered back to
 	// this node after these entries have been written to stable storage. When
 	// handled, this is roughly equivalent to:
+	// 一旦这些刚刚追加的日志条目被持久化（因为leader不会给自己发送MsgApp），leader需要自我确认这些条目。
+	// 这个响应消息将被添加到msgsAfterAppend中，并在这些条目被写入稳定存储后传递回这个节点。
+	// 当处理时，这大致相当于：
 	//
 	//  r.trk.Progress[r.id].MaybeUpdate(e.Index)
 	//  if r.maybeCommit() {
@@ -871,7 +915,12 @@ func (r *raft) appendEntry(es ...pb.Entry) (accepted bool) {
 	return true
 }
 
+// Leader和followers/candidates的具体tick行为是不同的：
+// Leader：leader调用的是tickHeartbeat
+// followers/candidates：调用的是tickElection
+
 // tickElection is run by followers and candidates after r.electionTimeout.
+// tickElection在r.electionTimeout之后由follower和candidate运行。
 func (r *raft) tickElection() {
 	r.electionElapsed++
 
@@ -884,6 +933,7 @@ func (r *raft) tickElection() {
 }
 
 // tickHeartbeat is run by leaders to send a MsgBeat after r.heartbeatTimeout.
+// tickHeartbeat由leader运行，以在r.heartbeatTimeout之后发送MsgBeat。
 func (r *raft) tickHeartbeat() {
 	r.heartbeatElapsed++
 	r.electionElapsed++
@@ -943,6 +993,7 @@ func (r *raft) becomePreCandidate() {
 	// Becoming a pre-candidate changes our step functions and state,
 	// but doesn't change anything else. In particular it does not increase
 	// r.Term or change r.Vote.
+	// 成为pre-candidate会改变我们的step函数和状态，但不会改变其他任何东西。特别是它不会增加r.Term或更改r.Vote。
 	r.step = stepCandidate
 	r.trk.ResetVotes()
 	r.tick = r.tickElection
@@ -965,6 +1016,8 @@ func (r *raft) becomeLeader() {
 	// (perhaps after having received a snapshot as a result). The leader is
 	// trivially in this state. Note that r.reset() has initialized this
 	// progress with the last index already.
+	// 当follower被成功探测(可能是在成功接收快照之后)时，它们进入复制模式。leader显然处于这种状态。
+	// 请注意，r.reset()已经使用最后一个索引初始化了这个progress。
 	pr := r.trk.Progress[r.id]
 	pr.BecomeReplicate()
 	// The leader always has RecentActive == true; MsgCheckQuorum makes sure to
@@ -976,17 +1029,22 @@ func (r *raft) becomeLeader() {
 	// safe to delay any future proposals until we commit all our
 	// pending log entries, and scanning the entire tail of the log
 	// could be expensive.
+	// 将pendingConfIndex保守地设置为日志中的最后一个索引。可能有、也可能没有待处理的配置更改，
+	// 但是延迟任何未来的proposals，直到我们提交了所有pending状态的日志条目，扫描日志的整个尾部可能是昂贵的。
 	r.pendingConfIndex = r.raftLog.lastIndex()
 
 	emptyEnt := pb.Entry{Data: nil}
 	if !r.appendEntry(emptyEnt) {
 		// This won't happen because we just called reset() above.
+		// 这不会发生，因为我们刚刚在上面调用了reset()。
 		r.logger.Panic("empty entry was dropped")
 	}
 	// The payloadSize of an empty entry is 0 (see TestPayloadSizeOfEmptyEntry),
 	// so the preceding log append does not count against the uncommitted log
 	// quota of the new leader. In other words, after the call to appendEntry,
 	// r.uncommittedSize is still 0.
+	// 空条目的payloadSize为0（参见TestPayloadSizeOfEmptyEntry），因此前面的日志附加不计入新leader的未提交日志配额。
+	// 换句话说，在调用appendEntry之后，r.uncommittedSize仍然为0。
 	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
 }
 
@@ -1000,6 +1058,8 @@ func (r *raft) hup(t CampaignType) {
 		r.logger.Warningf("%x is unpromotable and can not campaign", r.id)
 		return
 	}
+	// 若有未处理的配置更改，则不发起选举，这是为了保证每次集群成员变化时只会有一个节点在发生变化
+	// 不能同时有多个集群成员在发生状态变化(如集群中不允许同时发生集群成员变更和选举)
 	if r.hasUnappliedConfChanges() {
 		r.logger.Warningf("%x cannot campaign at term %d since there are still pending configuration changes to apply", r.id, r.Term)
 		return
@@ -1359,6 +1419,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		}
 		// Mark everyone (but ourselves) as inactive in preparation for the next
 		// CheckQuorum.
+		// 为下一次CheckQuorum做准备，标记所有人（除了我们自己）为不活跃状态。
 		r.trk.Visit(func(id uint64, pr *tracker.Progress) {
 			if id != r.id {
 				pr.RecentActive = false
@@ -1398,8 +1459,13 @@ func stepLeader(r *raft, m pb.Message) error {
 				cc = ccc
 			}
 			if cc != nil {
+				// alreadyPending表示当前raftNode存在未应用的ConfChange消息
 				alreadyPending := r.pendingConfIndex > r.raftLog.applied
+				// alreadyJoint表示当前集群是否正在处于JointConfigurations状态
 				alreadyJoint := len(r.trk.Config.Voters[1]) > 0
+				// wantsLeaveJoint；若该消息的changes字段为空，则表示该消息是一个空的ConfChange消息，
+				// 空的ConfChange消息只能用于将集群从JointConfigurations状态退出，进而完全进入新的配置状态。
+				// 注意旧的消息格式同样会被转化为V2格式，所以这里只需要判断V2格式的ConfChange消息
 				wantsLeaveJoint := len(cc.AsV2().Changes) == 0
 
 				var failedCheck string
@@ -1410,11 +1476,14 @@ func stepLeader(r *raft, m pb.Message) error {
 				} else if !alreadyJoint && wantsLeaveJoint {
 					failedCheck = "not in joint state; refusing empty conf change"
 				}
-
+				// 若failedCheck不为空，且当前raftNode没有禁用配置更改验证，则忽略该ConfChange消息
 				if failedCheck != "" && !r.disableConfChangeValidation {
 					r.logger.Infof("%x ignoring conf change %v at config %s: %s", r.id, cc, r.trk.Config, failedCheck)
 					m.Entries[i] = pb.Entry{Type: pb.EntryNormal}
 				} else {
+					// 若failedCheck为空，或者当前raftNode禁用了配置更改验证
+					// 则将该ConfChange消息在日志中应该所处的索引记录到pendingConfIndex中
+					// 意味着当前raftNode存在未应用的ConfChange消息
 					r.pendingConfIndex = r.raftLog.lastIndex() + uint64(i) + 1
 				}
 			}
@@ -1782,28 +1851,36 @@ func stepLeader(r *raft, m pb.Message) error {
 		}
 		leadTransferee := m.From
 		lastLeadTransferee := r.leadTransferee
+		// 若当前有正在进行的Leader Transfer操作
 		if lastLeadTransferee != None {
+			// 若当前正在进行的Leader Transfer操作的目标节点与当前请求的目标节点相同，则直接返回
 			if lastLeadTransferee == leadTransferee {
 				r.logger.Infof("%x [term %d] transfer leadership to %x is in progress, ignores request to same node %x",
 					r.id, r.Term, leadTransferee, leadTransferee)
 				return nil
 			}
+			// 若当前正在进行的Leader Transfer操作的目标节点与当前请求的目标节点不同，则取消当前的Leader Transfer操作
+			// 之后开始处理新的Leader Transfer操作
 			r.abortLeaderTransfer()
 			r.logger.Infof("%x [term %d] abort previous transferring leadership to %x", r.id, r.Term, lastLeadTransferee)
 		}
-		if leadTransferee == r.id {
+		if leadTransferee == r.id { // 若当前节点就是Leader，则直接返回
 			r.logger.Debugf("%x is already leader. Ignored transferring leadership to self", r.id)
 			return nil
 		}
 		// Transfer leadership to third party.
 		r.logger.Infof("%x [term %d] starts to transfer leadership to %x", r.id, r.Term, leadTransferee)
 		// Transfer leadership should be finished in one electionTimeout, so reset r.electionElapsed.
+		// Leader Transfer操作应该在一个electionTimeout内完成，所以重置r.electionElapsed
 		r.electionElapsed = 0
 		r.leadTransferee = leadTransferee
 		if pr.Match == r.raftLog.lastIndex() {
+			// 若当前目标节点的MatchIndex等于当前节点的lastIndex，说明日志已经同步到最新，直接发送MsgTimeoutNow消息
+			// 通知目标节点立即发起选举
 			r.sendTimeoutNow(leadTransferee)
 			r.logger.Infof("%x sends MsgTimeoutNow to %x immediately as %x already has up-to-date log", r.id, leadTransferee, leadTransferee)
 		} else {
+			// 否则，发送MsgApp消息，让目标节点尽快同步日志
 			r.sendAppend(leadTransferee)
 		}
 	}
@@ -2138,23 +2215,28 @@ func (r *raft) promotable() bool {
 
 func (r *raft) applyConfChange(cc pb.ConfChangeV2) pb.ConfState {
 	cfg, trk, err := func() (tracker.Config, tracker.ProgressMap, error) {
+		// 首先，根据ConfChangeV2消息中的配置变更信息，生成一个Changer对象
 		changer := confchange.Changer{
 			Tracker:   r.trk,
 			LastIndex: r.raftLog.lastIndex(),
 		}
 		if cc.LeaveJoint() {
+			// 若cc本身是一条空的配置变更消息，意味着当前节点可以离开JointConfig状态
 			return changer.LeaveJoint()
 		} else if autoLeave, ok := cc.EnterJoint(); ok {
+			// 若本次变更使用的是Joint Consensus算法
 			return changer.EnterJoint(autoLeave, cc.Changes...)
 		}
+		// 若变更操作只有一条，则采用one at a time的方式
 		return changer.Simple(cc.Changes...)
 	}()
 
+	// 变更后的配置状态有问题：未通过checkAndReturn()检查
 	if err != nil {
 		// TODO(tbg): return the error to the caller.
 		panic(err)
 	}
-
+	// 用新的配置和进度信息更新当前节点的配置和进度信息
 	return r.switchToConfig(cfg, trk)
 }
 
@@ -2162,8 +2244,11 @@ func (r *raft) applyConfChange(cc pb.ConfChangeV2) pb.ConfState {
 // updates the in-memory state and, when necessary, carries out additional
 // actions such as reacting to the removal of nodes or changed quorum
 // requirements.
+// switchToConfig用提供的配置重新配置此节点。它更新内存状态，并在必要时执行其他操作，
+// 例如响应节点的移除或更改法定人数要求。
 //
 // The inputs usually result from restoring a ConfState or applying a ConfChange.
+// 输入通常是从恢复ConfState或应用ConfChange中获得的。
 func (r *raft) switchToConfig(cfg tracker.Config, trk tracker.ProgressMap) pb.ConfState {
 	r.trk.Config = cfg
 	r.trk.Progress = trk
@@ -2174,17 +2259,23 @@ func (r *raft) switchToConfig(cfg tracker.Config, trk tracker.ProgressMap) pb.Co
 
 	// Update whether the node itself is a learner, resetting to false when the
 	// node is removed.
+	// 更新节点本身是否为学习者，当节点被移除时重置为false。
 	r.isLearner = ok && pr.IsLearner
 
+	// 若当前节点在应用配置变更前是Leader，且在新配置中被移除或者被降级为学习者，则需要立即降级为Follower
 	if (!ok || r.isLearner) && r.state == StateLeader {
 		// This node is leader and was removed or demoted, step down if requested.
+		// 该节点是Leader并且被移除或降级为学习者，如果需要则立即降级为Follower。
 		//
 		// We prevent demotions at the time writing but hypothetically we handle
 		// them the same way as removing the leader.
+		// 在写入时，我们避免节点降级；但在假设情况下，我们以与移除Leader相同的方式处理降级。
 		//
 		// TODO(tbg): ask follower with largest Match to TimeoutNow (to avoid
 		// interruption). This might still drop some proposals but it's better than
 		// nothing.
+		// TODO(tbg):请求具有最大Match的follower接收TimeoutNow消息（以避免中断）。
+		// 这可能仍然会丢弃一些提案，但总比没有好。
 		if r.stepDownOnRemoval {
 			r.becomeFollower(r.Term, None)
 		}
@@ -2193,6 +2284,7 @@ func (r *raft) switchToConfig(cfg tracker.Config, trk tracker.ProgressMap) pb.Co
 
 	// The remaining steps only make sense if this node is the leader and there
 	// are other nodes.
+	// 如果当前节点是Leader并且有其他节点，则剩下的步骤才有意义。
 	if r.state != StateLeader || len(cs.Voters) == 0 {
 		return cs
 	}
@@ -2200,11 +2292,13 @@ func (r *raft) switchToConfig(cfg tracker.Config, trk tracker.ProgressMap) pb.Co
 	if r.maybeCommit() {
 		// If the configuration change means that more entries are committed now,
 		// broadcast/append to everyone in the updated config.
+		// 如果配置更改意味着现在提交了更多的条目，则广播/追加到更新后的配置中的每个人。
 		r.bcastAppend()
 	} else {
 		// Otherwise, still probe the newly added replicas; there's no reason to
 		// let them wait out a heartbeat interval (or the next incoming
 		// proposal).
+		// 否则，仍然探测新添加的副本；没有理由让它们等待一个心跳间隔（或下一个传入的提案）。
 		r.trk.Visit(func(id uint64, pr *tracker.Progress) {
 			if id == r.id {
 				return
@@ -2213,6 +2307,7 @@ func (r *raft) switchToConfig(cfg tracker.Config, trk tracker.ProgressMap) pb.Co
 		})
 	}
 	// If the leadTransferee was removed or demoted, abort the leadership transfer.
+	// 如果leadTransferee被移除或降级，则中止领导权转移。
 	if _, tOK := r.trk.Config.Voters.IDs()[r.leadTransferee]; !tOK && r.leadTransferee != 0 {
 		r.abortLeaderTransfer()
 	}
@@ -2260,6 +2355,7 @@ func (r *raft) committedEntryInCurrentTerm() bool {
 
 // responseToReadIndexReq constructs a response for `req`. If `req` comes from the peer
 // itself, a blank value will be returned.
+// responseToReadIndexReq为`req`构造一个响应。如果`req`来自peer自己，则返回一个空值。
 func (r *raft) responseToReadIndexReq(req pb.Message, readIndex uint64) pb.Message {
 	if req.From == None || req.From == r.id {
 		r.readStates = append(r.readStates, ReadState{
@@ -2281,6 +2377,8 @@ func (r *raft) responseToReadIndexReq(req pb.Message, readIndex uint64) pb.Messa
 // If the new entries would exceed the limit, the method returns false. If not,
 // the increase in uncommitted entry size is recorded and the method returns
 // true.
+// increaseUncommittedSize计算提议的entries的大小，并确定它们是否会将leader推到其maxUncommittedSize限制之上。
+// 如果新的entries将超过限制，则该方法返回false。如果没有，则记录本次未提交的entry大小的增加结果，并返回true。
 //
 // Empty payloads are never refused. This is used both for appending an empty
 // entry at a new leader's term, as well as leaving a joint configuration.
@@ -2294,6 +2392,9 @@ func (r *raft) increaseUncommittedSize(ents []pb.Entry) bool {
 		// appending single empty entries to the log always succeeds, used both
 		// for replicating a new leader's initial empty entry, and for
 		// auto-leaving joint configurations.
+		// 如果Raft日志的未提交尾部为空，则允许任何大小的提议。否则，限制日志的未提交尾部的大小，
+		// 并丢弃任何会将大小推到限制之上的提议。注意增加的要求是s>0，这用于确保将单个空条目附加到日志总是成功的，
+		// 该机制用于复制新领导者的初始空条目，以及自动离开联合配置。
 		return false
 	}
 	r.uncommittedSize += s
@@ -2302,11 +2403,13 @@ func (r *raft) increaseUncommittedSize(ents []pb.Entry) bool {
 
 // reduceUncommittedSize accounts for the newly committed entries by decreasing
 // the uncommitted entry size limit.
+// reduceUncommittedSize通过减少未提交的entry大小限制来记录新提交的entries。
 func (r *raft) reduceUncommittedSize(s entryPayloadSize) {
 	if s > r.uncommittedSize {
 		// uncommittedSize may underestimate the size of the uncommitted Raft
 		// log tail but will never overestimate it. Saturate at 0 instead of
 		// allowing overflow.
+		// uncommittedSize可能低估未提交的Raft日志尾部的大小，但永远不会高估它。饱和到0，而不是允许溢出。
 		r.uncommittedSize = 0
 	} else {
 		r.uncommittedSize -= s
@@ -2338,8 +2441,12 @@ func sendMsgReadIndexResponse(r *raft, m pb.Message) {
 	// thinking: use an internally defined context instead of the user given context.
 	// We can express this in terms of the term and index instead of a user-supplied value.
 	// This would allow multiple reads to piggyback on the same message.
+	// 思考：使用内部定义的上下文，而不是用户给定的上下文。
+	// 我们可以根据任期和索引来表达这一点，而不是用户提供的值。
+	// 这将允许多个读取附加在同一消息上。
 	switch r.readOnly.option {
 	// If more than the local vote is needed, go through a full broadcast.
+	// 如果需要的不仅仅是本地的投票，那么就需要进行全广播。
 	case ReadOnlySafe:
 		r.readOnly.addRequest(r.raftLog.committed, m)
 		// The local node automatically acks the request.

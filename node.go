@@ -103,6 +103,7 @@ type Ready struct {
 	// on immediately. It will be reflected in a MsgStorageApply message in the
 	// Messages slice.
 	// CommittedEntries指定要提交到存储/状态机的条目。这些条目先前已附加到稳定存储中。
+	// 这些条目需要被应用到状态机中。
 	// 如果启用了async storage writes，则不需要立即对此字段进行操作。它将在Messages切片中的MsgStorageApply消息中反映出来。
 	CommittedEntries []pb.Entry
 
@@ -169,7 +170,10 @@ type Node interface {
 	// message is only allowed if all Nodes participating in the cluster run a
 	// version of this library aware of the V2 API. See pb.ConfChangeV2 for
 	// usage details and semantics.
-	// ProposeConfChange提议配置更改。与任何提议一样，配置更改可能会被丢弃，也可能会返回错误。特别是，除非领导者确定其日志中没有未应用的配置更改，否则将丢弃配置更改。
+	//
+	// ProposeConfChange提议配置更改。与任何提议一样，配置更改可能会被丢弃，也可能会返回错误。
+	// 特别是，除非领导者确定其日志中没有未应用的配置更改，否则将丢弃配置更改。
+	//
 	// 该方法接受pb.ConfChange（已弃用）或pb.ConfChangeV2消息。
 	// 后者允许通过联合共识进行任意配置更改，特别是包括替换投票者。
 	// 仅当参与集群的所有节点运行的版本都知道V2 API时，才允许传递ConfChangeV2消息。有关用法详细信息和语义，请参见pb.ConfChangeV2。
@@ -215,7 +219,9 @@ type Node interface {
 	// Returns an opaque non-nil ConfState protobuf which must be recorded in
 	// snapshots.
 	// ApplyConfChange将配置更改（先前传递给ProposeConfChange的命令）应用到节点。
-	// 每当在Ready.CommittedEntries中观察到配置更改时，都必须调用此方法，除非应用程序决定拒绝配置更改（即将其视为no-op操作），在这种情况下，不得调用此方法。
+	// 每当在Ready.CommittedEntries中观察到配置更改时，都必须调用此方法，除非应用程序决定拒绝配置更改
+	// （即将其视为no-op操作），在这种情况下，不得调用此方法。
+	//
 	// 返回一个不透明的非nil的ConfState protobuf(grpc的一种序列化协议)，该protobuf必须记录在快照中。
 	ApplyConfChange(cc pb.ConfChangeI) *pb.ConfState
 
@@ -336,6 +342,9 @@ func StartNode(c *Config, peers []Peer) Node {
 // The current membership of the cluster will be restored from the Storage.
 // If the caller has an existing state machine, pass in the last log index that
 // has been applied to it; otherwise use zero.
+//
+// RestartNode类似于StartNode，但不接受peers列表。集群的当前成员资格将从Storage中恢复。
+// 如果调用者有现有的状态机，请传递已应用到状态机的最后一个日志索引；否则使用0。
 func RestartNode(c *Config) Node {
 	rn, err := NewRawNode(c)
 	if err != nil {
@@ -354,16 +363,27 @@ type msgWithResult struct {
 // node is the canonical implementation of the Node interface
 // node是Node接口的规范实现
 type node struct {
-	propc      chan msgWithResult
+	// propc用于缓冲待propose到raft的消息
+	propc chan msgWithResult
+	// recvc、confc、confstatec：
+	// 用于接收从外部传入的消息，同样这部分要propose到raft
+	// 如：Peer发送的一些Message，在async模式下，还有local append thread和local apply thread发送的消息
 	recvc      chan pb.Message
 	confc      chan pb.ConfChangeV2
 	confstatec chan pb.ConfState
-	readyc     chan Ready
-	advancec   chan struct{}
-	tickc      chan struct{}
-	done       chan struct{}
-	stop       chan struct{}
-	status     chan chan Status
+	// readyc用于缓冲raft的Ready消息
+	// 从而及时调用rawNode
+	readyc chan Ready
+	// advancec用于通知rawNode，当前的Ready已经处理完毕
+	// 可以准备下一个Ready
+	advancec chan struct{}
+	// tickc用于接收时钟周期
+	// 用于触发raft的tick
+	tickc chan struct{}
+	done  chan struct{}
+	stop  chan struct{}
+	// status用于获取当前节点的状态，向上层输出当前raft状态机的状态
+	status chan chan Status
 
 	rn *RawNode
 }
@@ -379,6 +399,8 @@ func newNode(rn *RawNode) node {
 		// make tickc a buffered chan, so raft node can buffer some ticks when the node
 		// is busy processing raft messages. Raft node will resume process buffered
 		// ticks when it becomes idle.
+		// 将tickc设置为缓冲通道，以便raft节点在忙于处理raft消息时可以缓冲一些时钟周期。
+		// 当raft节点变得空闲时，raft节点将恢复处理缓冲的时钟周期。
 		tickc:  make(chan struct{}, 128),
 		done:   make(chan struct{}),
 		stop:   make(chan struct{}),
@@ -419,6 +441,9 @@ func (n *node) run() {
 			// handled first, but it's generally good to emit larger Readys plus
 			// it simplifies testing (by emitting less frequently and more
 			// predictably).
+			// 填充一个Ready。请注意，不能保证实际处理此Ready。我们将启用readyc，但不能保证我们实际上会发送它。
+			// 可能我们将服务于另一个通道，然后循环，然后再次填充Ready。我们可以强制先处理先前的Ready，但通常最好发出更大的Ready，
+			// 这样可以简化测试（通过更少且更可预测地发出）。
 			rd = n.rn.readyWithoutAccept()
 			readyc = n.readyc
 		}
@@ -442,6 +467,7 @@ func (n *node) run() {
 		// TODO: maybe buffer the config propose if there exists one (the way
 		// described in raft dissertation)
 		// Currently it is dropped in Step silently.
+		// TODO: 如果存在配置提议，则可能缓冲该提议（如raft论文中所述的方式）。目前它在Step中被静默丢弃。
 		case pm := <-propc:
 			m := pm.m
 			m.From = r.id
@@ -451,23 +477,32 @@ func (n *node) run() {
 				close(pm.result)
 			}
 		case m := <-n.recvc:
+			// 若接收到的消息是响应消息、且From不是来自local append thread或者local apply thread、
+			// 且当前节点中没有m.from对应的节点进度，则忽略该消息
 			if IsResponseMsg(m.Type) && !IsLocalMsgTarget(m.From) && r.trk.Progress[m.From] == nil {
 				// Filter out response message from unknown From.
+				// 过滤掉未知来源的响应消息。
 				break
 			}
 			r.Step(m)
 		case cc := <-n.confc:
 			_, okBefore := r.trk.Progress[r.id]
+			// cs是应用完配置变更后的配置状态
 			cs := r.applyConfChange(cc)
 			// If the node was removed, block incoming proposals. Note that we
 			// only do this if the node was in the config before. Nodes may be
 			// a member of the group without knowing this (when they're catching
 			// up on the log and don't have the latest config) and we don't want
 			// to block the proposal channel in that case.
+			// 如果节点被移除，则阻止传入的提议。请注意，仅在节点之前在配置中时才执行此操作。
+			// 节点可能是组的成员，但不知道这一点（当它们正在追赶日志并且没有最新配置时），
+			// 我们不希望在这种情况下阻止提议通道。
 			//
 			// NB: propc is reset when the leader changes, which, if we learn
 			// about it, sort of implies that we got readded, maybe? This isn't
 			// very sound and likely has bugs.
+			// 注意：当领导者更改时，propc会被重置，如果我们了解到这一点，这有点意味着我们可能被重新添加了，也许？
+			// 这不是很合理，可能有错误。
 			if _, okAfter := r.trk.Progress[r.id]; okBefore && !okAfter {
 				var found bool
 				for _, sl := range [][]uint64{cs.Voters, cs.VotersOutgoing} {
@@ -492,6 +527,7 @@ func (n *node) run() {
 		case <-n.tickc:
 			n.rn.Tick()
 		case readyc <- rd:
+			// 应用程序已经处理完当前的Ready，告知raft状态机，可以准备下一个Ready
 			n.rn.acceptReady(rd)
 			if !n.rn.asyncStorageWrites {
 				advancec = n.advancec
@@ -514,6 +550,7 @@ func (n *node) run() {
 
 // Tick increments the internal logical clock for this Node. Election timeouts
 // and heartbeat timeouts are in units of ticks.
+// Tick 递增此节点的内部逻辑时钟。选举超时和心跳超时的单位就是ticks。
 func (n *node) Tick() {
 	select {
 	case n.tickc <- struct{}{}:
@@ -531,6 +568,7 @@ func (n *node) Propose(ctx context.Context, data []byte) error {
 
 func (n *node) Step(ctx context.Context, m pb.Message) error {
 	// Ignore unexpected local messages receiving over network.
+	// 忽略通过网络接收到的意外本地消息。
 	if IsLocalMsg(m.Type) && !IsLocalMsgTarget(m.From) {
 		// TODO: return an error?
 		return nil

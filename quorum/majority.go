@@ -22,6 +22,7 @@ import (
 )
 
 // MajorityConfig is a set of IDs that uses majority quorums to make decisions.
+// MajorityConfig是一个ID集合，使用多数派来做决策。
 type MajorityConfig map[uint64]struct{}
 
 func (c MajorityConfig) String() string {
@@ -44,6 +45,8 @@ func (c MajorityConfig) String() string {
 
 // Describe returns a (multi-line) representation of the commit indexes for the
 // given lookuper.
+// Describe返回给定查找器的提交索引的多行表示。
+// 该方法用于打印MajorityConfig中每个节点的提交索引。最后以图表的形式展示。
 func (c MajorityConfig) Describe(l AckedIndexer) string {
 	if len(c) == 0 {
 		return "<empty majority quorum>"
@@ -58,6 +61,7 @@ func (c MajorityConfig) Describe(l AckedIndexer) string {
 	// Below, populate .bar so that the i-th largest commit index has bar i (we
 	// plot this as sort of a progress bar). The actual code is a bit more
 	// complicated and also makes sure that equal index => equal bar.
+	// 下面，填充.bar，以便第i个最大的提交索引具有bar i（我们将其绘制为一种进度条）。
 
 	n := len(c)
 	info := make([]tup, 0, n)
@@ -103,6 +107,7 @@ func (c MajorityConfig) Describe(l AckedIndexer) string {
 }
 
 // Slice returns the MajorityConfig as a sorted slice.
+// Slice将MajorityConfig作为排序的切片返回。
 func (c MajorityConfig) Slice() []uint64 {
 	var sl []uint64
 	for id := range c {
@@ -140,6 +145,9 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 	// replication factor of >7 is rare, and in cases in which it happens
 	// performance is a lesser concern (additionally the performance
 	// implications of an allocation here are far from drastic).
+	// 当n <= 7时，使用一个栈上的切片来收集已提交的索引（否则我们会分配内存）。
+	// 另一种方法是将一个切片存储在MajorityConfig上，但这会降低可用性（现在，MajorityConfig只是一个map，这很好）。
+	// 假设运行的复制因子>7是罕见的，在发生这种情况时，性能是一个较小的问题（此外，在这里分配的性能影响远非严重）。
 	var stk [7]uint64
 	var srt []uint64
 	if len(stk) >= n {
@@ -184,6 +192,7 @@ func (c MajorityConfig) CommittedIndex(l AckedIndexer) Index {
 // quorum of no has been reached).
 // VoteResult接受一个投票者到yes/no（true/false）投票的映射，并返回一个结果，指示投票是挂起（yes或no都没有到达多数派）,
 // 赢得（已经达到yes的多数派）或丢失（已经达到no的多数派）。
+// votes：投票者到yes/no（true/false）投票的映射，其中包含的投票者可能不在MajorityConfig中。
 func (c MajorityConfig) VoteResult(votes map[uint64]bool) VoteResult {
 	if len(c) == 0 {
 		// By convention, the elections on an empty config win. This comes in

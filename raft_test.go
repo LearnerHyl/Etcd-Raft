@@ -3263,6 +3263,8 @@ func TestStepConfig(t *testing.T) {
 // TestStepIgnoreConfig tests that if raft step the second msgProp in
 // EntryConfChange type when the first one is uncommitted, the node will set
 // the proposal to noop and keep its original state.
+// TestStepIgnoreConfig 测试：如果raft在第一个配置变更操作提交的前提下
+// 开始处理第二个配置变更操作，那么节点会将这个操作设置为一个空操作，并保持其原始状态。
 func TestStepIgnoreConfig(t *testing.T) {
 	// a raft that cannot make progress
 	r := newTestRaft(1, 10, 1, newTestMemoryStorage(withPeers(1, 2)))

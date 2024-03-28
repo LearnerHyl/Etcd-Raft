@@ -177,23 +177,30 @@ func (MessageType) EnumDescriptor() ([]byte, []int) {
 
 // ConfChangeTransition specifies the behavior of a configuration change with
 // respect to joint consensus.
+// ConfChangeTransition指定了与联合共识相关的配置更改的行为。
 type ConfChangeTransition int32
 
 const (
 	// Automatically use the simple protocol if possible, otherwise fall back
 	// to ConfChangeJointImplicit. Most applications will want to use this.
+	// 如果可能，自动使用简单协议，否则退回到ConfChangeJointImplicit。
+	// 大多数应用程序都会想要使用这种方式。这是默认的配置。
 	ConfChangeTransitionAuto ConfChangeTransition = 0
 	// Use joint consensus unconditionally, and transition out of them
 	// automatically (by proposing a zero configuration change).
+	// 无条件使用联合共识，并自动退出（通过提出零配置更改）。
 	//
 	// This option is suitable for applications that want to minimize the time
 	// spent in the joint configuration and do not store the joint configuration
 	// in the state machine (outside of InitialState).
+	// 此选项适用于希望最小化联合配置中的时间并且不将联合配置存储在状态机中（在InitialState之外）的应用程序。
 	ConfChangeTransitionJointImplicit ConfChangeTransition = 1
 	// Use joint consensus and remain in the joint configuration until the
 	// application proposes a no-op configuration change. This is suitable for
 	// applications that want to explicitly control the transitions, for example
 	// to use a custom payload (via the Context field).
+	// 使用联合共识，并保持联合配置，直到应用程序提出一个空配置更改。这适用于希望显式控制转换的应用程序，
+	// 例如使用自定义有效载荷（通过Context字段）。
 	ConfChangeTransitionJointExplicit ConfChangeTransition = 2
 )
 
@@ -526,7 +533,7 @@ type ConfState struct {
 	// The learners in the incoming config.
 	Learners []uint64 `protobuf:"varint,2,rep,name=learners" json:"learners,omitempty"`
 	// The voters in the outgoing config.
-	VotersOutgoing []uint64 `protobuf:"varint,3,rep,name=voters_outgoing,json=votersOutgoing" json:"voters_outgoing,omitempty"`
+	VotersOutgoing []uint64 `proto buf:"varint,3,rep,name=voters_outgoing,json=votersOutgoing" json:"voters_outgoing,omitempty"`
 	// The nodes that will become learners when the outgoing config is removed.
 	// These nodes are necessarily currently in nodes_joint (or they would have
 	// been added to the incoming config right away).
@@ -570,12 +577,15 @@ func (m *ConfState) XXX_DiscardUnknown() {
 var xxx_messageInfo_ConfState proto.InternalMessageInfo
 
 type ConfChange struct {
+	// type是配置更改的类型。它可以是ConfChangeAddNode、ConfChangeRemoveNode、ConfChangeUpdateNode或ConfChangeAddLearnerNode。
 	Type    ConfChangeType `protobuf:"varint,2,opt,name=type,enum=raftpb.ConfChangeType" json:"type"`
+	// node_id是要添加、删除或更新的节点的ID。
 	NodeID  uint64         `protobuf:"varint,3,opt,name=node_id,json=nodeId" json:"node_id"`
 	Context []byte         `protobuf:"bytes,4,opt,name=context" json:"context,omitempty"`
 	// NB: this is used only by etcd to thread through a unique identifier.
 	// Ideally it should really use the Context instead. No counterpart to
 	// this field exists in ConfChangeV2.
+	// 注意：这仅由etcd用于通过唯一标识符线程。理想情况下，它应该真正使用Context。ConfChangeV2中不存在与此字段对应的字段。
 	ID uint64 `protobuf:"varint,1,opt,name=id" json:"id"`
 }
 
@@ -614,6 +624,7 @@ var xxx_messageInfo_ConfChange proto.InternalMessageInfo
 
 // ConfChangeSingle is an individual configuration change operation. Multiple
 // such operations can be carried out atomically via a ConfChangeV2.
+// ConfChangeSingle是一个单独的配置更改操作。可以通过ConfChangeV2原子地执行多个此类操作。
 type ConfChangeSingle struct {
 	Type   ConfChangeType `protobuf:"varint,1,opt,name=type,enum=raftpb.ConfChangeType" json:"type"`
 	NodeID uint64         `protobuf:"varint,2,opt,name=node_id,json=nodeId" json:"node_id"`
@@ -655,16 +666,20 @@ var xxx_messageInfo_ConfChangeSingle proto.InternalMessageInfo
 // ConfChangeV2 messages initiate configuration changes. They support both the
 // simple "one at a time" membership change protocol and full Joint Consensus
 // allowing for arbitrary changes in membership.
+// ConfChangeV2消息启动配置更改。它们支持简单的“一次一个”成员更改协议和完整的联合共识，允许对成员资格进行任意更改。
 //
 // The supplied context is treated as an opaque payload and can be used to
 // attach an action on the state machine to the application of the config change
 // proposal. Note that contrary to Joint Consensus as outlined in the Raft
 // paper[1], configuration changes become active when they are *applied* to the
 // state machine (not when they are appended to the log).
+// 提供的Context字段被视为不透明的有效载荷，可以用于将状态机上的操作附加到配置更改提议的应用程序。
+// 请注意，与Raft论文中概述的联合共识相反，配置更改在应用于状态机时变为活动状态（而不是在附加到日志时）。
 //
 // The simple protocol can be used whenever only a single change is made.
+// 若只进行单个节点的更改，那么无论何时都可以使用简单协议。
 //
-// Non-simple changes require the use of Joint Consensus, for which two
+// Non-simple changes require t he use of Joint Consensus, for which two
 // configuration changes are run. The first configuration change specifies the
 // desired changes and transitions the Raft group into the joint configuration,
 // in which quorum requires a majority of both the pre-changes and post-changes
@@ -674,12 +689,18 @@ var xxx_messageInfo_ConfChangeSingle proto.InternalMessageInfo
 // replication factor of three, it is not possible to replace a voter without
 // entering an intermediate configuration that does not survive the outage of
 // one availability zone.
+// 非简单更改需要使用联合共识，其中运行两个配置更改。第一个配置更改指定所需更改，并将Raft组转换为联合配置，
+// 其中quorum需要先前更改和后续更改配置的大多数。联合共识避免进入可能危及生存能力的脆弱中间配置。
+// 例如，在跨三个可用区并具有三个复制因子的情况下，如果不使用Joint Consensus算法，那么就不可能
+// 在不进入一个脆弱的中间配置的情况下替换一个投票者，而这个中间配置无法在一个可用区的故障中生存。
 //
 // The provided ConfChangeTransition specifies how (and whether) Joint Consensus
 // is used, and assigns the task of leaving the joint configuration either to
 // Raft or the application. Leaving the joint configuration is accomplished by
 // proposing a ConfChangeV2 with only and optionally the Context field
 // populated.
+// 提供的ConfChangeTransition字段指定如何（以及是否）使用联合共识，并将离开联合配置的任务分配给Raft或应用程序。
+// 通过propose一个ConfChangeV2消息，并且可以选择性的填充Context字段来离开联合配置。
 //
 // For details on Raft membership changes, see:
 //

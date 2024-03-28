@@ -21,15 +21,19 @@ Raft is a protocol with which a cluster of nodes can maintain a replicated state
 The state machine is kept in sync through the use of a replicated log.
 For more details on Raft, see "In Search of an Understandable Consensus Algorithm"
 (https://raft.github.io/raft.pdf) by Diego Ongaro and John Ousterhout.
+Raft是一种协议，通过该协议，节点集群可以维护一个复制的状态机。状态机通过复制日志保持同步。
+有关Raft的更多详细信息，请参见Diego Ongaro和John Ousterhout的“In Search of an Understandable Consensus Algorithm”（https://raft.github.io/raft.pdf）。
 
 A simple example application, _raftexample_, is also available to help illustrate
 how to use this package in practice:
+还提供了一个简单的示例应用程序_raftexample_，以帮助说明如何在实践中使用此包：
 https://github.com/etcd-io/etcd/tree/main/contrib/raftexample
 
 # Usage
 
 The primary object in raft is a Node. You either start a Node from scratch
 using raft.StartNode or start a Node from some initial state using raft.RestartNode.
+raft的主要对象是Node。您可以使用raft.StartNode从头开始启动Node，也可以使用raft.RestartNode从某个初始状态启动Node。
 
 To start a node from scratch:
 
@@ -68,14 +72,18 @@ To restart a node from previous state:
 	n := raft.RestartNode(c)
 
 Now that you are holding onto a Node you have a few responsibilities:
+现在您持有一个Node，您有一些责任：
 
 First, you must read from the Node.Ready() channel and process the updates
 it contains. These steps may be performed in parallel, except as noted in step
 2.
+首先，您必须从Node.Ready()通道中读取并处理它包含的更新。这些步骤可以并行执行，除非在步骤2中另有说明。
 
 1. Write HardState, Entries, and Snapshot to persistent storage if they are
 not empty. Note that when writing an Entry with Index i, any
 previously-persisted entries with Index >= i must be discarded.
+如果HardState、Entries和Snapshot不为空，则将它们写入持久存储。请注意，当写入索引为i的条目时，
+必须丢弃任何索引大于或等于i的先前持久化的条目。
 
 2. Send all Messages to the nodes named in the To field. It is important that
 no messages be sent until the latest HardState has been persisted to disk,
@@ -85,11 +93,17 @@ optimization can be applied to make leader write to disk in parallel with its
 followers (as explained at section 10.2.1 in Raft thesis). If any Message has type
 MsgSnap, call Node.ReportSnapshot() after it has been sent (these messages may be
 large).
+将所有消息发送到在To字段中指定的节点。重要的是，在最新的 **HardState** 被持久化到磁盘之前，
+不要发送任何消息，并且所有由之前的 **Ready** 批次写入的条目都已经被持久化（尽管来自同一批次的条目正在被持久化，
+但仍然可以发送消息）。为了减少 I/O 延迟，可以应用一种优化，使领导者与其跟随者并行写入磁盘(详见 Raft 论文的
+第 10.2.1 节)。如果任何消息的类型是MsgSnap，在发送后调用 `Node.ReportSnapshot()`（这些消息可能很大）。
 
 Note: Marshalling messages is not thread-safe; it is important that you
 make sure that no new entries are persisted while marshalling.
 The easiest way to achieve this is to serialize the messages directly inside
 your main raft loop.
+注意：消息的序列化不是线程安全的；重要的是确保在序列化时没有新条目被持久化。
+实现这一点的最简单方法是直接在主raft循环中序列化消息。
 
 3. Apply Snapshot (if any) and CommittedEntries to the state machine.
 If any committed Entry has Type EntryConfChange, call Node.ApplyConfChange()
@@ -98,17 +112,26 @@ by setting the NodeID field to zero before calling ApplyConfChange
 (but ApplyConfChange must be called one way or the other, and the decision to cancel
 must be based solely on the state machine and not external information such as
 the observed health of the node).
+将快照（如果有）和CommittedEntries应用于状态机。如果任何已提交的条目的类型为EntryConfChange，
+则调用Node.ApplyConfChange()将其应用于节点。在调用ApplyConfChange之前，可以通过将NodeID字段设置为零来取消配置更改
+（但必须以某种方式调用ApplyConfChange，并且取消决定必须仅基于状态机，而不是外部信息，例如观察到的节点健康状况）。
 
 4. Call Node.Advance() to signal readiness for the next batch of updates.
 This may be done at any time after step 1, although all updates must be processed
 in the order they were returned by Ready.
+调用Node.Advance()以表示准备好接收下一批更新。这可以在步骤1之后的任何时间完成，
+尽管所有更新必须按照Ready返回的顺序进行处理。
 
 Second, all persisted log entries must be made available via an
 implementation of the Storage interface. The provided MemoryStorage
 type can be used for this (if you repopulate its state upon a
 restart), or you can supply your own disk-backed implementation.
+其次，所有持久化的日志条目必须通过Storage接口的实现可用。
+可以使用提供的MemoryStorage类型（如果在重新启动时重新填充其状态），
+也可以提供自己的基于磁盘的实现。
 
 Third, when you receive a message from another node, pass it to Node.Step:
+当从另一个节点接收到消息时，请将其传递给Node.Step：
 
 	func recvRaftRPC(ctx context.Context, m raftpb.Message) {
 		n.Step(ctx, m)
@@ -118,8 +141,11 @@ Finally, you need to call Node.Tick() at regular intervals (probably
 via a time.Ticker). Raft has two important timeouts: heartbeat and the
 election timeout. However, internally to the raft package time is
 represented by an abstract "tick".
+最后，您需要定期（可能通过time.Ticker）调用Node.Tick()。Raft有两个重要的超时：心跳和选举超时。
+但是，在raft包内部，时间由抽象的“tick”表示。
 
 The total state machine handling loop will look something like this:
+整个状态机处理的循环将如下所示：
 
 	for {
 	  select {
@@ -147,19 +173,24 @@ The total state machine handling loop will look something like this:
 
 To propose changes to the state machine from your node take your application
 data, serialize it into a byte slice and call:
+要从节点提出对状态机的更改，请获取应用程序数据，将其序列化为字节片，并调用：
 
 	n.Propose(ctx, data)
 
 If the proposal is committed, data will appear in committed entries with type
 raftpb.EntryNormal. There is no guarantee that a proposed command will be
 committed; you may have to re-propose after a timeout.
+如果提案被提交，数据将出现在具有类型raftpb.EntryNormal的已提交条目中。
+不能保证提议的命令将被提交；您可能需要在超时后重新提出。
 
 To add or remove a node in a cluster, build ConfChange struct 'cc' and call:
+要在集群中添加或删除节点，请构建ConfChange结构'cc'并调用：
 
 	n.ProposeConfChange(ctx, cc)
 
 After config change is committed, some committed entry with type
 raftpb.EntryConfChange will be returned. You must apply it to node through:
+配置更改提交后，将返回一些具有类型raftpb.EntryConfChange的已提交条目。您必须通过以下方式将其应用于节点：
 
 	var cc raftpb.ConfChange
 	cc.Unmarshal(data)
@@ -169,6 +200,8 @@ Note: An ID represents a unique node in a cluster for all time. A
 given ID MUST be used only once even if the old node has been removed.
 This means that for example IP addresses make poor node IDs since they
 may be reused. Node IDs must be non-zero.
+注意：ID代表集群中的唯一节点，一直有效。给定的ID只能使用一次，即使旧节点已被删除。这意味着例如IP地址不适合用作节点ID，
+因为它们可能被重用。节点ID必须是非零的。
 
 # Usage with Asynchronous Storage Writes
 
@@ -177,6 +210,8 @@ writes that can provide better performance in the presence of high proposal
 concurrency by minimizing interference between proposals. This feature is called
 AsynchronousStorageWrites, and can be enabled using the flag on the Config
 struct with the same name.
+该库可以配置用于本地存储写入的替代接口。该接口通过最小化提案之间的干扰，可以在高提案并发性的情况下提供更好的性能。
+此功能称为AsynchronousStorageWrites，并可以使用Config结构上的同名标志启用。
 
 When Asynchronous Storage Writes is enabled, the responsibility of code using
 the library is different from what was presented above. Users still read from
@@ -186,6 +221,10 @@ fields (steps 1 and 3 above). They also no longer call Node.Advance() to
 indicate that they have processed all entries in the Ready (step 4 above).
 Instead, all local storage operations are also communicated through messages
 present in the Ready.Message slice.
+启用Asynchronous Storage Writes时，使用库的代码的责任与上面介绍的不同。用户仍然从Node.Ready()通道中读取。
+但是，他们以不同的方式处理其中包含的更新。用户不再查看HardState、Entries和Snapshot字段（上面的步骤1和3）。
+他们也不再调用Node.Advance()来指示他们已处理Ready中的所有条目（上面的步骤4）。
+相反，所有本地存储操作也通过Ready.Message切片中的消息进行通信。
 
 The local storage messages come in two flavors. The first flavor is log append
 messages, which target a LocalAppendThread and carry Entries, HardState, and a
@@ -193,13 +232,19 @@ Snapshot. The second flavor is entry application messages, which target a
 LocalApplyThread and carry CommittedEntries. Messages to the same target must be
 reliably processed in order. Messages to different targets can be processed in
 any order.
+local storage消息有两种类型。第一种类型是日志附加消息，它们针对LocalAppendThread，并携带Entries、HardState和Snapshot。
+第二种类型是entry application消息，它们针对LocalApplyThread，并携带CommittedEntries。
+发送到相同目标的消息必须按顺序可靠处理。发送到不同目标的消息可以以任何顺序处理。
 
 Each local storage message carries a slice of response messages that must
 delivered after the corresponding storage write has been completed. These
 responses may target the same node or may target other nodes.
+每个local storage消息都携带一组响应消息的切片，这些响应消息必须在相应的storage write完成后传递。
+这些响应可能针对同一节点，也可能针对其他节点。
 
 With Asynchronous Storage Writes enabled, the total state machine handling loop
 will look something like this:
+启用Asynchronous Storage Writes后，整个状态机处理循环将如下所示：
 
 	for {
 	  select {
@@ -224,6 +269,8 @@ will look something like this:
 Usage of Asynchronous Storage Writes will typically also contain a pair of
 storage handler threads, one for log writes (append) and one for entry
 application to the local state machine (apply). Those will look something like:
+使用Asynchronous Storage Writes通常还包含一对storage handler线程，一个用于日志写入（附加），一个用于将条目应用于本地状态机（应用）。
+它们将如下所示：
 
 	// append thread
 	go func() {
@@ -269,12 +316,18 @@ membership change takes effect when its entry is applied, not when it
 is added to the log (so the entry is committed under the old
 membership instead of the new). This is equivalent in terms of safety,
 since the old and new configurations are guaranteed to overlap.
+这个实现是最新的Raft论文(https://github.com/ongardie/dissertation/blob/master/stanford.pdf)，
+尽管我们的成员更改协议的实现与第4章中描述的有所不同。成员更改一次只发生一个节点的关键不变性被保留，
+但在我们的实现中，成员更改在应用其条目时生效，而不是在将其添加到日志中时（因此该条目在旧成员身份下被提交，而不是新成员身份下被提交）。
+就安全性而言，这是等效的，因为保证了旧配置和新配置重叠。
 
 To ensure that we do not attempt to commit two membership changes at
 once by matching log positions (which would be unsafe since they
 should have different quorum requirements), we simply disallow any
 proposed membership change while any uncommitted change appears in
 the leader's log.
+为了确保我们不会通过匹配日志位置（这是不安全的，因为它们应该具有不同的法定人数要求）同时尝试提交两个成员更改，
+当领导者的日志中出现任何未提交的更改时，我们只是禁止任何提议的成员更改。即如果有未提交的更改，则不允许propose新的更改。
 
 This approach introduces a problem when you try to remove a member
 from a two-member cluster: If one of the members dies before the
@@ -282,6 +335,9 @@ other one receives the commit of the confchange entry, then the member
 cannot be removed any more since the cluster cannot make progress.
 For this reason it is highly recommended to use three or more nodes in
 every cluster.
+当您尝试从两个成员的集群中删除一个成员时，这种方法会引入一个问题：如果其中一个成员在另一个成员接收到confchange条目的提交之前死亡，
+则该成员将无法再被删除，因为集群无法取得进展。因此，强烈建议在每个集群中使用三个或更多节点。
+注意，两个节点的集群的quorum是2，所以如果一个节点挂掉，另一个节点就无法达到quorum，导致集群无法继续工作。
 
 # MessageType
 

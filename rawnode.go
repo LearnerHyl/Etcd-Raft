@@ -495,6 +495,7 @@ func newStorageApplyRespMsg(r *raft, ents []pb.Entry) pb.Message {
 // acceptReady在RawNode的使用者决定继续处理Ready时调用。
 // 在此调用和之前对Ready()的调用之间，不得更改RawNode的状态。
 // 意思是当一个节点正在处理Ready的时候，不允许其他的goroutine去修改RawNode的状态。
+// 说明上层node已经处理完Ready中的数据，rawNode可以清空这些数据了。
 func (rn *RawNode) acceptReady(rd Ready) {
 	if rd.SoftState != nil {
 		rn.prevSoftSt = rd.SoftState
@@ -665,6 +666,7 @@ func (rn *RawNode) ForgetLeader() error {
 // Read State has a read index. Once the application advances further than the read
 // index, any linearizable read requests issued before the read request can be
 // processed safely. The read state will have the same rctx attached.
+//
 // ReadIndex请求一个read state。read state将在ready中设置。
 // Read State具有一个read index。一旦应用程序超过了read index，任何在read请求之前发出的可线性化读请求都可以安全地处理。
 // read state将附加相同的rctx。

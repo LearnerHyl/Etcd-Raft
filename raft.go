@@ -58,12 +58,16 @@ type ReadOnlyOption int
 const (
 	// ReadOnlySafe guarantees the linearizability of the read only request by
 	// communicating with the quorum. It is the default and suggested option.
+	// ReadOnlySafe通过与法定人数通信，保证了只读请求的线性化。这是默认和建议的选项。
 	ReadOnlySafe ReadOnlyOption = iota
 	// ReadOnlyLeaseBased ensures linearizability of the read only request by
 	// relying on the leader lease. It can be affected by clock drift.
 	// If the clock drift is unbounded, leader might keep the lease longer than it
 	// should (clock can move backward/pause without any bound). ReadIndex is not safe
 	// in that case.
+	// ReadOnlyLeaseBased通过依赖领导者租约来保证只读请求的线性化。它可能会受到时钟漂移的影响。
+	// 如果时钟漂移是无界的，领导者可能会保留比规定时间来说更长的租约（时钟可以在没有任何限制的情况下向后移动/暂停）。
+	// 在这种情况下，ReadIndex是不安全的。
 	ReadOnlyLeaseBased
 )
 
@@ -133,21 +137,29 @@ type Config struct {
 	// candidate and start an election. ElectionTick must be greater than
 	// HeartbeatTick. We suggest ElectionTick = 10 * HeartbeatTick to avoid
 	// unnecessary leader switching.
+	// ElectionTick是必须在选举之间传递的Node.Tick调用次数。也就是说，如果在ElectionTick过去之前，
+	// 跟随者没有收到当前任期的领导者的任何消息，它将成为候选者并开始选举。ElectionTick必须大于HeartbeatTick。
+	// 我们建议ElectionTick = 10 * HeartbeatTick，以避免不必要的领导者切换。
 	ElectionTick int
 	// HeartbeatTick is the number of Node.Tick invocations that must pass between
 	// heartbeats. That is, a leader sends heartbeat messages to maintain its
 	// leadership every HeartbeatTick ticks.
+	// HeartbeatTick是必须在心跳之间传递的Node.Tick调用次数。也就是说，领导者每HeartbeatTick个tick
+	// 发送一次心跳消息以维持其领导地位。
 	HeartbeatTick int
 
 	// Storage is the storage for raft. raft generates entries and states to be
 	// stored in storage. raft reads the persisted entries and states out of
 	// Storage when it needs. raft reads out the previous state and configuration
 	// out of storage when restarting.
+	// Storage是raft的存储。raft生成要存储在存储中的条目和状态。当需要时，raft从存储中读取持久化的条目和状态。
 	Storage Storage
 	// Applied is the last applied index. It should only be set when restarting
 	// raft. raft will not return entries to the application smaller or equal to
 	// Applied. If Applied is unset when restarting, raft might return previous
 	// applied entries. This is a very application dependent configuration.
+	// Applied是最后应用的索引。只有在重新启动raft时才应该设置。raft不会返回小于或等于Applied的条目给应用程序。
+	// 如果在重新启动时未设置Applied，raft可能会返回先前应用的条目。这是一个非常依赖于应用程序的配置。
 	Applied uint64
 
 	// AsyncStorageWrites configures the raft node to write to its local storage
@@ -158,6 +170,10 @@ type Config struct {
 	// between Raft proposals and increased batching of log appends and state
 	// machine application. As a result, use of asynchronous storage writes can
 	// reduce end-to-end commit latency and increase maximum throughput.
+	// AsyncStorageWrites配置raft节点使用请求/响应消息传递接口而不是
+	// 默认的Ready/Advance函数调用接口将数据写入本地存储（raft日志和状态机）。
+	// 本地存储消息可以进行流水线处理并异步处理（与Ready迭代相对），有助于减少Raft提案之间的干扰，
+	// 并增加日志附加和状态机应用的批处理。因此，使用异步存储写入可以减少端到端提交延迟并增加最大吞吐量。
 	//
 	// When true, the Ready.Message slice will include MsgStorageAppend and
 	// MsgStorageApply messages. The messages will target a LocalAppendThread
@@ -165,6 +181,10 @@ type Config struct {
 	// reliably processed in order. In other words, they can't be dropped (like
 	// messages over the network) and those targeted at the same thread can't be
 	// reordered. Messages to different targets can be processed in any order.
+	// 当为true时，Ready.Message切片将包含MsgStorageAppend和MsgStorageApply消息。
+	// 这些消息将分别针对LocalAppendThread和LocalApplyThread。必须按顺序可靠地处理相同目标的消息。
+	// 换句话说，它们不能被丢弃（例如网络上的消息），并且针对同一线程的消息不能被重新排序。
+	// 可以以任何顺序处理针对不同目标的消息。
 	//
 	// MsgStorageAppend carries Raft log entries to append, election votes /
 	// term changes / updated commit indexes to persist, and snapshots to apply.
@@ -172,11 +192,16 @@ type Config struct {
 	// before response messages are delivered. However, if the MsgStorageAppend
 	// carries no response messages, durability is not required. The message
 	// assumes the role of the Entries, HardState, and Snapshot fields in Ready.
+	// MsgStorageAppend携带要附加的Raft日志条目、选举投票/任期更改/更新的提交索引以及要应用的快照。
+	// 在传递响应消息之前，MsgStorageAppend中执行的所有写操作都必须是持久的。
+	// 但是，如果MsgStorageAppend不携带响应消息，则不需要持久性。该消息扮演Ready中的Entries、HardState和Snapshot字段的角色。
 	//
 	// MsgStorageApply carries committed entries to apply. Writes performed in
 	// service of a MsgStorageApply need not be durable before response messages
 	// are delivered. The message assumes the role of the CommittedEntries field
 	// in Ready.
+	// MsgStorageApply携带要应用的已提交条目。在传递响应消息之前，MsgStorageApply中执行的写操作无需是持久的。
+	// 该消息扮演Ready中的CommittedEntries字段的角色。
 	//
 	// Local messages each carry one or more response messages which should be
 	// delivered after the corresponding storage write has been completed. These
@@ -184,6 +209,8 @@ type Config struct {
 	// threads are not responsible for understanding the response messages, only
 	// for delivering them to the correct target after performing the storage
 	// write.
+	// 本地消息每个携带一个或多个响应消息，这些响应消息应在相应的存储写入完成后传递。
+	// 这些响应可能针对同一节点，也可能针对其他节点。存储线程不负责理解响应消息，只负责在执行存储写入后将其传递到正确的目标。
 	AsyncStorageWrites bool
 
 	// MaxSizePerMsg limits the max byte size of each append message. Smaller
@@ -191,27 +218,36 @@ type Config struct {
 	// during normal operation). On the other side, it might affect the
 	// throughput during normal replication. Note: math.MaxUint64 for unlimited,
 	// 0 for at most one entry per message.
+	// MaxSizePerMsg限制每个附加消息的最大字节大小。较小的值降低了raft恢复成本（初始探测和正常操作期间丢失的消息）。
 	MaxSizePerMsg uint64
 	// MaxCommittedSizePerReady limits the size of the committed entries which
 	// can be applying at the same time.
+	// MaxCommittedSizePerReady限制了可以同时应用的已提交条目的大小。
 	//
 	// Despite its name (preserved for compatibility), this quota applies across
 	// Ready structs to encompass all outstanding entries in unacknowledged
 	// MsgStorageApply messages when AsyncStorageWrites is enabled.
+	// 尽管它的名称（为了兼容性而保留）是这样的，但是当启用AsyncStorageWrites时，此配额适用于Ready结构，
 	MaxCommittedSizePerReady uint64
 	// MaxUncommittedEntriesSize limits the aggregate byte size of the
 	// uncommitted entries that may be appended to a leader's log. Once this
 	// limit is exceeded, proposals will begin to return ErrProposalDropped
 	// errors. Note: 0 for no limit.
+	// MaxUncommittedEntriesSize限制了可以附加到领导者日志中的未提交条目的聚合字节大小。
+	// 一旦超过此限制，提案将开始返回ErrProposalDropped错误。注意：0表示没有限制。
 	MaxUncommittedEntriesSize uint64
 	// MaxInflightMsgs limits the max number of in-flight append messages during
 	// optimistic replication phase. The application transportation layer usually
 	// has its own sending buffer over TCP/UDP. Setting MaxInflightMsgs to avoid
 	// overflowing that sending buffer. TODO (xiangli): feedback to application to
 	// limit the proposal rate?
+	// MaxInflightMsgs限制了乐观复制阶段中在途附加消息的最大数量。
+	// 应用传输层通常具有自己的TCP/UDP发送缓冲区。设置MaxInflightMsgs以避免溢出发送缓冲区。
+	// TODO（xiangli）：反馈给应用程序以限制提案速率？
 	MaxInflightMsgs int
 	// MaxInflightBytes limits the number of in-flight bytes in append messages.
 	// Complements MaxInflightMsgs. Ignored if zero.
+	// MaxInflightBytes限制了附加消息中在途字节的数量。补充MaxInflightMsgs。如果为零，则忽略。
 	//
 	// This effectively bounds the bandwidth-delay product. Note that especially
 	// in high-latency deployments setting this too low can lead to a dramatic
@@ -219,21 +255,28 @@ type Config struct {
 	// latency of 100ms to the leader and this setting is set to 1 MB, there is a
 	// throughput limit of 10 MB/s for this group. With RTT of 400ms, this drops
 	// to 2.5 MB/s. See Little's law to understand the maths behind.
+	// 这有效地限制了带宽延迟乘积。请注意，特别是在高延迟部署中，将此设置得太低可能会导致吞吐量大幅减少。
+	// 例如，对于一个与leader之间的往返延迟为100ms的对等节点，如果此设置为1MB，则该组的吞吐量限制为10MB/s。
+	// 如果RTT为400ms，则降至2.5MB/s。请参见Little's law以了解背后的数学原理。
 	MaxInflightBytes uint64
 
 	// CheckQuorum specifies if the leader should check quorum activity. Leader
 	// steps down when quorum is not active for an electionTimeout.
+	// CheckQuorum指定领导者是否应检查法定活动。当选举超时时，领导者会下台。
 	CheckQuorum bool
 
 	// PreVote enables the Pre-Vote algorithm described in raft thesis section
 	// 9.6. This prevents disruption when a node that has been partitioned away
 	// rejoins the cluster.
+	// PreVote启用了raft论文第9.6节中描述的Pre-Vote算法。当一个被分区的节点重新加入集群时，这可以防止中断。
 	PreVote bool
 
 	// ReadOnlyOption specifies how the read only request is processed.
+	// ReadOnlyOption指定如何处理只读请求。
 	//
 	// ReadOnlySafe guarantees the linearizability of the read only request by
 	// communicating with the quorum. It is the default and suggested option.
+	// ReadOnlySafe通过与法定人数通信，保证了只读请求的线性化。这是默认和建议的选项。
 	//
 	// ReadOnlyLeaseBased ensures linearizability of the read only request by
 	// relying on the leader lease. It can be affected by clock drift.
@@ -241,10 +284,15 @@ type Config struct {
 	// should (clock can move backward/pause without any bound). ReadIndex is not safe
 	// in that case.
 	// CheckQuorum MUST be enabled if ReadOnlyOption is ReadOnlyLeaseBased.
+	// ReadOnlyLeaseBased通过依赖领导者租约来保证只读请求的线性化。它可能会受到时钟漂移的影响。
+	// 如果时钟漂移是无界的，领导者可能会保留比规定时间来说更长的租约（时钟可以在没有任何限制的情况下向后移动/暂停）。
+	// 在这种情况下，ReadIndex是不安全的。
+	// 如果ReadOnlyOption是ReadOnlyLeaseBased，则必须启用CheckQuorum。
 	ReadOnlyOption ReadOnlyOption
 
 	// Logger is the logger used for raft log. For multinode which can host
 	// multiple raft group, each raft group can have its own logger
+	// Logger是用于raft日志的记录器。对于可以托管多个raft组的多节点，每个raft组都可以有自己的记录器
 	Logger Logger
 
 	// DisableProposalForwarding set to true means that followers will drop
@@ -255,6 +303,9 @@ type Config struct {
 	// should be disabled to prevent a follower with an inaccurate hybrid
 	// logical clock from assigning the timestamp and then forwarding the data
 	// to the leader.
+	// 将DisableProposalForwarding设置为true意味着跟随者将丢弃提案，而不是将其转发给领导者。
+	// 此功能的一个用例是在Raft领导者用于计算提案的数据的情况下，例如，以单调递增的方式向数据添加混合逻辑时钟的时间戳。
+	// 应禁用转发以防止具有不准确混合逻辑时钟的跟随者分配时间戳，然后将数据转发给领导者。
 	DisableProposalForwarding bool
 
 	// DisableConfChangeValidation turns off propose-time verification of
@@ -269,18 +320,27 @@ type Config struct {
 	// not run against the "actual" config that will be the predecessor of the
 	// newly proposed one, the check may pass but the new config may be invalid
 	// when it is being applied. In other words, the checks are best-effort.
+	// DisableConfChangeValidation禁用对配置更改在raft实例的当前活动配置中的验证。
+	// 这些检查通常是明智的（除非在联合配置中，否则不能离开联合配置等），但它们有误报，因为活动配置可能不是最新的配置。
+	// 这是因为配置是在日志应用期间激活的，即使领导者也可能落后于日志应用，而日志应用的条目数量是无界的。
 	//
+	// 对称地，该机制存在误报，因为检查可能不会针对将成为新提议的配置的“实际”配置运行，检查可能会通过，
+	// 但在应用时新配置可能无效。换句话说，这些检查是尽力而为的。
 	// Users should *not* use this option unless they have a reliable mechanism
 	// (above raft) that serializes and verifies configuration changes. If an
 	// invalid configuration change enters the log and gets applied, a panic
 	// will result.
+	// 用户不应使用此选项，除非他们有一个可靠的机制（在raft之上）来串行化和验证配置更改。
+	// 如果无效的配置更改进入日志并被应用，将导致恐慌。
 	//
 	// This option may be removed once false positives are no longer possible.
 	// See: https://github.com/etcd-io/raft/issues/80
+	// 一旦不再可能出现误报，此选项可能会被删除。请参见：
 	DisableConfChangeValidation bool
 
 	// StepDownOnRemoval makes the leader step down when it is removed from the
 	// group or demoted to a learner.
+	// StepDownOnRemoval使领导者在从组中删除或降级为学习者时下台。
 	//
 	// This behavior will become unconditional in the future. See:
 	// https://github.com/etcd-io/raft/issues/83
@@ -782,11 +842,12 @@ func (r *raft) bcastAppend() {
 }
 
 // bcastHeartbeat sends RPC, without entries to all the peers.
+// bcastHeartbeat向所有对等节点发送RPC，不包含任何entries，
 func (r *raft) bcastHeartbeat() {
 	lastCtx := r.readOnly.lastPendingRequestCtx()
 	if len(lastCtx) == 0 {
 		r.bcastHeartbeatWithCtx(nil)
-	} else {
+	} else { // 若存在，携带最后一个readIndex请求的ctx
 		r.bcastHeartbeatWithCtx([]byte(lastCtx))
 	}
 }
@@ -1342,7 +1403,9 @@ func (r *raft) Step(m pb.Message) error {
 			// This seems counter- intuitive but is necessary in the situation in which
 			// a learner has been promoted (i.e. is now a voter) but has not learned
 			// about this yet.
-			// 注意：事实证明，learners必须被允许投票。这似乎是违反直觉的，但在以下情况下是必要的：
+			// 注意：事实证明，学习者必须被允许投票。这似乎是违反直觉的，但在以下情况下是必要的：
+			// 一个学习者已经被提升（即现在是一个投票者），但它还没有了解到这一点。
+			//
 			// For example, consider a group in which id=1 is a learner and id=2 and
 			// id=3 are voters. A configuration change promoting 1 can be committed on
 			// the quorum `{2,3}` without the config change being appended to the
@@ -1496,6 +1559,8 @@ func stepLeader(r *raft, m pb.Message) error {
 		return nil
 	case pb.MsgReadIndex:
 		// only one voting member (the leader) in the cluster
+		// 集群中只有一个投票成员（领导者）
+		// 那么直接返回ReadIndexResp消息，即直接处理该ReadIndex消息
 		if r.trk.IsSingleton() {
 			if resp := r.responseToReadIndexReq(m, r.raftLog.committed); resp.To != None {
 				r.send(resp)
@@ -1505,11 +1570,11 @@ func stepLeader(r *raft, m pb.Message) error {
 
 		// Postpone read only request when this leader has not committed
 		// any log entry at its term.
+		// 当该leader在其term中没有提交任何日志条目时，推迟只读请求
 		if !r.committedEntryInCurrentTerm() {
 			r.pendingReadIndexMessages = append(r.pendingReadIndexMessages, m)
 			return nil
 		}
-
 		sendMsgReadIndexResponse(r, m)
 
 		return nil
@@ -1797,15 +1862,19 @@ func stepLeader(r *raft, m pb.Message) error {
 			r.sendAppend(m.From)
 		}
 
-		// TODO:下面都是处理ReadIndex优化的逻辑，目前还看不懂
+		// 若readOnly的机制不为ReadOnlySafe，说明ReadIndex请求不需要每次都CheckQuorum，直接返回
+		// 消息的Context为空，意味着未携带ReadIndex请求，则直接返回
 		if r.readOnly.option != ReadOnlySafe || len(m.Context) == 0 {
 			return nil
 		}
 
+		// 若当前leader收到心跳响应后未达到Quorum，则直接返回
 		if r.trk.Voters.VoteResult(r.readOnly.recvAck(m.From, m.Context)) != quorum.VoteWon {
 			return nil
 		}
 
+		// 首先获取所有符合条件的ReadIndex消息
+		// 一个RequestCtx唯一对应一个ReadIndex消息，当某条ReadIndex消息的Quorum达到时，说明之前的ReadIndex也可以被处理
 		rss := r.readOnly.advance(m)
 		for _, rs := range rss {
 			if resp := r.responseToReadIndexReq(rs.req, rs.index); resp.To != None {
@@ -1846,6 +1915,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		r.logger.Debugf("%x failed to send message to %x because it is unreachable [%s]", r.id, m.From, pr)
 	case pb.MsgTransferLeader:
 		if pr.IsLearner {
+			// Learner状态的节点不能成为Leader，直接返回
 			r.logger.Debugf("%x is learner. Ignored transferring leadership", r.id)
 			return nil
 		}
@@ -2435,8 +2505,8 @@ func releasePendingReadIndexMessages(r *raft) {
 	for _, m := range msgs {
 		sendMsgReadIndexResponse(r, m)
 	}
-}
 
+}
 func sendMsgReadIndexResponse(r *raft, m pb.Message) {
 	// thinking: use an internally defined context instead of the user given context.
 	// We can express this in terms of the term and index instead of a user-supplied value.
@@ -2450,6 +2520,7 @@ func sendMsgReadIndexResponse(r *raft, m pb.Message) {
 	case ReadOnlySafe:
 		r.readOnly.addRequest(r.raftLog.committed, m)
 		// The local node automatically acks the request.
+		// 本地节点自动确认请求。
 		r.readOnly.recvAck(r.id, m.Entries[0].Data)
 		r.bcastHeartbeatWithCtx(m.Entries[0].Data)
 	case ReadOnlyLeaseBased:

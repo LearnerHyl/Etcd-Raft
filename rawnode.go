@@ -218,7 +218,7 @@ func (rn *RawNode) readyWithoutAccept() Ready {
 
 // MustSync returns true if the hard state and count of Raft entries indicate
 // that a synchronous write to persistent storage is required.
-// 如果HardState和Raft条目的计数表明需要对持久存储进行同步写入，则MustSync返回true。
+// 如果HardState和Raft日志条目的计数表明需要对持久存储进行同步写入，则MustSync返回true。
 func MustSync(st, prevst pb.HardState, entsnum int) bool {
 	// Persistent state on all servers:
 	// (Updated on stable storage before responding to RPCs)

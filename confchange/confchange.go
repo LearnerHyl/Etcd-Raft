@@ -98,32 +98,39 @@ func (c Changer) EnterJoint(autoLeave bool, ccs ...pb.ConfChangeSingle) (tracker
 // LeaveJoint transitions out of a joint configuration. It is an error to call
 // this method if the configuration is not joint, i.e. if the outgoing majority
 // config Voters[1] is empty.
+// LeaveJoint从联合配置中退出。如果配置不是联合的（即，outgoing大多数配置:Voters[1]为空），则调用此方法会导致错误。
 //
 // The outgoing majority config of the joint configuration will be removed,
 // that is, the incoming config is promoted as the sole decision maker. In the
 // notation of the Raft thesis[1] (Section 4.3), this method transitions from
 // `C_{new,old}` into `C_new`.
+// 联合配置的outgoing大多数配置将被删除，即incoming配置将被提升为唯一的决策者。
+// 在Raft论文[1]（第4.3节）的符号中，此方法从`C_{new,old}`过渡到`C_new`。
 //
 // At the same time, any staged learners (LearnersNext) the addition of which
 // was held back by an overlapping voter in the former outgoing config will be
 // inserted into Learners.
-//
+// 同时，在之前的outgoing配置中，由于重叠的投票者而被阻止添加的任何暂存的学习者（LearnersNext）将被插入到Learners中。
 // [1]: https://github.com/ongardie/dissertation/blob/master/online-trim.pdf
 func (c Changer) LeaveJoint() (tracker.Config, tracker.ProgressMap, error) {
+	// 检查并复制当前配置和进度
 	cfg, trk, err := c.checkAndCopy()
 	if err != nil {
 		return c.err(err)
 	}
+	// 若当前配置不是联合配置，则返回错误
 	if !joint(cfg) {
 		err := errors.New("can't leave a non-joint config")
 		return c.err(err)
 	}
+	// 将LearnersNext中的节点添加到Learners中
 	for id := range cfg.LearnersNext {
 		nilAwareAdd(&cfg.Learners, id)
 		trk[id].IsLearner = true
 	}
 	cfg.LearnersNext = nil
 
+	// 若旧配置中的Voters既不是新配置中的Voter，也不是新配置中的Learner，则删除
 	for id := range outgoing(cfg.Voters) {
 		_, isVoter := incoming(cfg.Voters)[id]
 		_, isLearner := cfg.Learners[id]
